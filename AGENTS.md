@@ -24,6 +24,10 @@ and every `*.localhost` name is also listed on the landing page at `http://local
 `proxy_buffering off` there is required for SSE, and its loopback ACL is what stops a LAN client from
 reading the pairing token through the proxy.
 
+The app itself runs under pm2 as `translator` (see `ecosystem.config.cjs`), which is what keeps the
+vhost from answering 502. After changing it: `pm2 restart translator`. It is in `~/.pm2/dump.pm2`, so
+`pm2 resurrect` brings it back on boot.
+
 Always run `npm run typecheck` (or `npm run build`) before saying a change works — the SPA and the
 server are separate TS projects (`tsconfig.app.json`, `tsconfig.server.json`).
 

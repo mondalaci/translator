@@ -179,11 +179,16 @@ the pairing page through nginx and read the token. The QR keeps pointing at
 ## Run it always
 
 ```bash
-pm2 start ecosystem.config.cjs     # or: systemd, a desktop autostart entry, whatever you like
+pm2 start ecosystem.config.cjs   # then: pm2 save
 ```
 
-`npm start` is a plain foreground process; `Ctrl+C` stops it. `config.json` and `dist/` are
-git-ignored, so rebuilding never touches your secrets.
+`pm2 save` matters: the saved list is what `pm2 resurrect` replays on boot through the
+`pm2-<user>.service` systemd unit. Without it the app comes back as a 502 on the next reboot.
+
+`npm start` (or `pm2 start npm --name translator -- start`) is the plain foreground variant; `Ctrl+C`
+stops it, and a browser hitting `translator.localhost` then gets a 502, because nginx is proxying to a
+port nothing is listening on. `config.json` and `dist/` are git-ignored, so rebuilding never touches
+your secrets.
 
 ## Development
 
@@ -220,6 +225,7 @@ design/              icon master
 
 | Symptom | Fix |
 | --- | --- |
+| `502` from `translator.localhost` | The app is not running — nginx is proxying to a dead port. `pm2 start ecosystem.config.cjs && pm2 save`, or `npm start`. |
 | Phone cannot connect | Phone and PC on the same Wi-Fi? Some routers have "AP isolation" on, which blocks device-to-device traffic. |
 | `401 Not paired` | Scan the QR again, or use `New code` and rescan. |
 | `No OpenRouter API key` | Set `openrouter.apiKey` in `config.json` and restart. |
