@@ -1,0 +1,256 @@
+/* translator — night-time, phone-first. Pitch black on purpose: the screen is
+   the only light source while gaming, so nothing here emits more than it must. */
+
+:root {
+  --bg: #000000;
+  --fg: #ededed;
+  --fg-strong: #ffffff;
+  --dim: #8c8c8c;
+  --dimmer: #5c5c5c;
+  --surface: #0a0a0a;
+  --surface-2: #121212;
+  --line: #1e1e1e;
+  --accent: #8ab4ff;
+  --accent-dim: #3b5c8f;
+  --warn: #ffb454;
+  --danger: #ff7b7b;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --tap: 52px;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--fg);
+  overscroll-behavior-y: none;
+}
+
+body {
+  font: 17px/1.55 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeSpeed;
+}
+
+#app {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Touch targets stay comfortably big for one-handed use in the dark. */
+button {
+  touch-action: manipulation;
+  cursor: pointer;
+  border: 0;
+  background: none;
+}
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: var(--tap);
+  height: var(--tap);
+  border-radius: 50%;
+  color: var(--dim);
+  background: transparent;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.icon-btn:active,
+.icon-btn[data-state='open'] {
+  color: var(--fg-strong);
+  background: var(--surface-2);
+}
+
+.icon-btn[aria-pressed='true'] {
+  color: var(--fg-strong);
+}
+
+.primary {
+  min-height: var(--tap);
+  padding: 0 22px;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: #05122b;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+}
+
+.primary:disabled {
+  background: var(--surface-2);
+  color: var(--dimmer);
+}
+
+.ghost {
+  min-height: var(--tap);
+  padding: 0 18px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--fg);
+}
+
+.ghost:active {
+  background: var(--line);
+}
+
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Bottom sheets (Reka Dialog) shared by history and settings. */
+.sheet-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  z-index: 40;
+}
+
+.sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 41;
+  max-height: 86dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  padding-bottom: var(--safe-b);
+  animation: sheet-in 0.18s ease-out;
+}
+
+.sheet[data-state='closed'] {
+  animation: sheet-out 0.16s ease-in;
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(14px);
+    opacity: 0.4;
+  }
+}
+
+@keyframes sheet-out {
+  to {
+    transform: translateY(14px);
+    opacity: 0.2;
+  }
+}
+
+.sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 16px 18px 10px;
+}
+
+.sheet__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.sheet__body {
+  overflow-y: auto;
+  padding: 0 18px 22px;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (min-width: 40rem) {
+  .sheet {
+    left: 50%;
+    right: auto;
+    bottom: 1.5rem;
+    width: 32rem;
+    transform: translateX(-50%);
+    border: 1px solid var(--line);
+    border-radius: var(--radius-lg);
+  }
+}
+
+/* Toasts (Reka) — thin, dark, low-glare. */
+.toast-viewport {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(18px + var(--safe-b));
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 16px;
+  list-style: none;
+  pointer-events: none;
+}
+
+.toast {
+  max-width: 32rem;
+  padding: 11px 16px;
+  color: var(--fg-strong);
+  background: #141414;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 12px;
+  font-size: 15px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.85);
+}
+
+.toast--success {
+  border-left-color: #78d18c;
+}
+
+.toast--error {
+  border-left-color: var(--danger);
+}
+
+.toast[data-state='open'] {
+  animation: toast-in 0.16s ease-out;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

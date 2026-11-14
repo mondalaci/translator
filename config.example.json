@@ -1,0 +1,37 @@
+{
+  "server": {
+    "port": 8787,
+    "host": "0.0.0.0",
+    "publicUrl": ""
+  },
+
+  "openrouter": {
+    "apiKey": "",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "deepseek/deepseek-v4.1-flash",
+    "temperature": 0.2,
+    "maxTokens": 700,
+    "reasoning": {
+      "effort": "low",
+      "exclude": true
+    },
+    "appName": "translator",
+    "siteUrl": ""
+  },
+
+  "language": {
+    "target": "hu",
+    "targetName": "Hungarian",
+    "nativeName": "magyar"
+  },
+
+  "auth": {
+    "token": "",
+    "sessionDays": 365,
+    "allowRemotePairing": false
+  },
+
+  "rateLimit": {
+    "lookupsPerMinute": 30
+  }
+}
