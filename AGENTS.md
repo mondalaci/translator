@@ -31,16 +31,24 @@ server are separate TS projects (`tsconfig.app.json`, `tsconfig.server.json`).
 
 - `src/components/` — `LookupView` (phone app), `PairScreen` (PC, shows the QR), `ResultCard`,
   `HistorySheet`, `SettingsSheet`.
-- `src/lib/` — markdown rendering, settings/history persistence, display mode, wake lock, speech,
-  toasts, language table.
+- `src/lib/` — markdown rendering, settings/history persistence, display mode, wake lock, speech
+  fallback, toasts, language table.
 - `server/` — `config.ts` (load/merge/persist), `auth.ts` (cookie + device tracking),
-  `openrouter.ts` (SSE client), `prompt.ts` (the dictionary prompt), `index.ts` (routes).
+  `openrouter.ts` (SSE chat client), `tts.ts` (speech + WAV wrapping + cache), `audio.ts` (host
+  playback), `prompt.ts` (the dictionary prompt), `index.ts` (routes).
 
 ## Things that bite
 
 - **`config.json` is runtime state, not source.** It is git-ignored, generated on first start, and
   the auth token is written back into it. `config.example.json` is the committed template — keep the
-  two in sync when adding keys.
+  two in sync when adding keys (the `tts` block landed in both).
+- **Backticks inside the prompt template literal** in `server/prompt.ts` end the template string and
+  break the build. Write markers like `'_(en)_'` with single quotes if you need them quoted.
+- **Gemini TTS only returns headerless PCM** (`response_format: 'pcm'`; it 400s on `mp3`), which is
+  why `server/tts.ts` writes a RIFF/WAVE header before the file is played or served.
+- **Speech plays on the host on purpose.** `tts.playOnHost` shells out to `paplay`/`pw-play`/`ffplay`/
+  `mpv`/`aplay`; the player is killed and replaced when a new clip starts, and `Stop` kills the
+  process group — so the spawn must stay `detached`.
 - **Scoped CSS does not reach Reka's Select content or viewport.** Style them with `:deep()`.
 - **Never portal a Reka popover out of a modal Dialog** — the dialog's pointer-events lock makes it
   untappable. `SelectPortal disabled` keeps it inside.
@@ -56,3 +64,25 @@ server are separate TS projects (`tsconfig.app.json`, `tsconfig.server.json`).
 Point `openrouter.baseUrl` at any OpenAI-compatible SSE endpoint (a throwaway mock is enough) and set
 `openrouter.apiKey` to a dummy value. Then `npm run build && npm start`, open `http://localhost:8787`,
 scan-pair with `?k=<token>`, and drive the UI with a headless browser.
+
+## Testing speech
+
+Speech needs a real key — `/audio/speech` is not worth mocking, since the interesting failures are
+provider-shaped (the model refusing `mp3`, an unknown voice name). A one-word clip costs a fraction
+of a cent:
+
+```bash
+TOKEN=$(python3 -c "import json;print(json.load(open('config.json'))['auth']['token'])")
+curl -s -c /tmp/jar "http://localhost:8787/auth?k=$TOKEN" -o /dev/null
+curl -s -b /tmp/jar -X POST http://localhost:8787/api/speak \
+  -H 'content-type: application/json' -d '{"text":"nerf"}'
+```
+
+To prove the sound really leaves the machine, watch the sink while it plays:
+
+```bash
+pactl -f json list sink-inputs | python3 -c "import json,sys;print([(i['properties'].get('application.name'), i['sink']) for i in json.load(sys.stdin)])"
+```
+
+A `paplay` entry on your default sink is the feature working. `ffprobe .cache/tts/*.wav` should report
+`pcm_s16le, 24000 Hz, mono`.

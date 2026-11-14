@@ -49,6 +49,25 @@ export interface Config {
     /** Allow showing the pairing QR to non-localhost visitors. Off by default. */
     allowRemotePairing: boolean
   }
+  tts: {
+    enabled: boolean
+    /** Only `openrouter` today: the /audio/speech endpoint on the same API key. */
+    provider: string
+    /** Speech model id, e.g. google/gemini-3.8-flash-tts. */
+    model: string
+    /** Prebuilt voice name, e.g. Kore, Puck, Charon. */
+    voice: string
+    /** Optional delivery direction, e.g. "calm and clear, slightly slow". */
+    instructions: string
+    /** Gemini TTS returns headerless PCM; this is how it gets a WAV header. */
+    pcm: { sampleRate: number; channels: number; bits: number }
+    /** Play the audio on the machine running the server, not just on the phone. */
+    playOnHost: boolean
+    /** Player command. Auto-detected (paplay, pw-play, ffplay, mpv, aplay) when empty. */
+    player: string
+    /** Keep synthesised files in .cache/tts and reuse them by content hash. */
+    cache: boolean
+  }
   rateLimit: {
     lookupsPerMinute: number
   }
@@ -68,6 +87,17 @@ const DEFAULTS: Config = {
   },
   language: { target: 'hu', targetName: 'Hungarian', nativeName: 'magyar' },
   auth: { token: '', sessionDays: 365, allowRemotePairing: false },
+  tts: {
+    enabled: true,
+    provider: 'openrouter',
+    model: 'google/gemini-3.8-flash-tts',
+    voice: 'Kore',
+    instructions: '',
+    pcm: { sampleRate: 24000, channels: 1, bits: 16 },
+    playOnHost: true,
+    player: '',
+    cache: true,
+  },
   rateLimit: { lookupsPerMinute: 30 },
 }
 

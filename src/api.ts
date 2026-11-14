@@ -1,3 +1,29 @@
+export interface SpeechInfo {
+  enabled: boolean
+  model: string
+  voice: string
+  instructions: string
+  playOnHost: boolean
+  player: string | null
+  playerFound: boolean
+  available: boolean
+  voices: string[]
+}
+
+export interface SpeakResult {
+  ok: true
+  /** Path of the cached clip, playable by this browser too. */
+  audio: string
+  file: string
+  bytes: number
+  cached: boolean
+  model: string
+  voice: string
+  playedOnHost: boolean
+  player: string | null
+  playError: string | null
+}
+
 export interface Status {
   authenticated: boolean
   pairingAvailable: boolean
@@ -6,6 +32,7 @@ export interface Status {
   port: number
   hasApiKey: boolean
   language: { target: string; targetName: string; nativeName: string }
+  tts: SpeechInfo
   version: string | null
 }
 
@@ -42,6 +69,9 @@ export const api = {
     request<{ url: string; model: string; language: Status['language'] }>('/api/pair/link'),
   rotate: () => request<{ ok: true; url: string }>('/api/auth/rotate', { method: 'POST' }),
   devices: () => request<{ devices: PairedDevice[] }>('/api/devices'),
+  speak: (body: { text: string; voice?: string; instructions?: string }) =>
+    request<SpeakResult>('/api/speak', { method: 'POST', body: JSON.stringify(body) }),
+  stopSpeech: () => request<{ ok: true; stopped: boolean }>('/api/speak/stop', { method: 'POST' }),
 }
 
 export interface LookupHandlers {

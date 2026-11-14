@@ -3,20 +3,25 @@
 A pocket English dictionary served from your own PC.
 
 You run it on the desktop, point your phone at the QR code it prints, and from then on the phone is
-a full-screen, pitch-black look-up window: type a word or phrase, get a Hungarian
-meaning — with pronunciation, senses and examples — streamed back word by word from OpenRouter.
+a full-screen, pitch-black look-up window: type a word or phrase, get a plain-English definition,
+the Hungarian meanings — with pronunciation, senses and examples — streamed back word by word from
+OpenRouter.
+
+Press play and the answer is spoken **on the PC**, not on the phone, so a look-up is heard in the
+headphones you are already wearing mid-game.
 
 Built for the dark: the phone UI is pure `#000` with dimmed secondary text, so glancing at it next to
 your keyboard while gaming does not blind you.
 
 ![the phone app, dark](docs/screenshot-phone.png)
 
-| Pairing on the PC | Settings | History |
+| Pairing on the PC | Speech settings | History |
 | --- | --- | --- |
-| ![pairing qr](docs/screenshot-pairing.png) | ![settings sheet](docs/screenshot-settings.png) | ![history sheet](docs/screenshot-history.png) |
+| ![pairing qr](docs/screenshot-pairing.png) | ![speech settings](docs/screenshot-speech.png) | ![history sheet](docs/screenshot-history.png) |
 
 - **Stack** — Vue 3 + Reka UI + Vite on the front, a small Express server on the back.
 - **Model** — `deepseek/deepseek-v4.1-flash` by default, any OpenRouter model id works.
+- **Speech** — `google/gemini-3.8-flash-tts` through OpenRouter's `/audio/speech`, played on the PC.
 - **Auth** — the QR code carries a one-time link that swaps the shared token for a long-lived cookie.
 - **PWA** — installable, works as a standalone/full-screen app, opens offline.
 
@@ -95,10 +100,49 @@ phone's `Settings → Unpair this phone` clears its own cookie.
 | `auth.token` | generated | Shared secret. Generated on first start. Env: `TRANSLATOR_TOKEN`. |
 | `auth.sessionDays` | `365` | How long a paired phone stays signed in. |
 | `auth.allowRemotePairing` | `false` | Let non-localhost visitors see the pairing QR. Off for a reason. |
-| `rateLimit.lookupsPerMinute` | `30` | Per-IP guard against runaway loops burning credits. |
+| `tts.enabled` | `true` | Master switch for speech. |
+| `tts.model` | `google/gemini-3.8-flash-tts` | Any speech model on OpenRouter's `/audio/speech`. |
+| `tts.voice` | `Kore` | Prebuilt Gemini voice (30 of them, listed in the app's Settings). |
+| `tts.instructions` | `""` | Optional delivery direction, e.g. `calm and clear, slightly slow`. |
+| `tts.pcm` | `24000` / `1` / `16` | Format of the returned PCM; only change it for a non-Gemini model. |
+| `tts.playOnHost` | `true` | Play the clip through the PC's default audio sink. |
+| `tts.player` | `""` | Force a player instead of auto-detecting one. |
+| `tts.cache` | `true` | Reuse `.cache/tts/` clips keyed by text, voice and instructions. |
+| `rateLimit.lookupsPerMinute` | `30` | Per-IP guard against runaway loops burning credits. Speech shares this budget. |
 
 Env overrides: `PORT`, `HOST`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`,
 `TRANSLATOR_TOKEN`, `TRANSLATOR_PUBLIC_URL`, `TRANSLATOR_CONFIG`.
+
+## Speech: play it on the PC
+
+The play button (and its shortcut) does not use the phone's built-in voice. The phone asks the
+server, the server synthesises the text with `google/gemini-3.8-flash-tts` through OpenRouter's
+OpenAI-compatible `/audio/speech` endpoint, and then plays the clip **on the machine running the
+server** — the desktop with the headset on it. That is the point: you look a word up on the phone
+and hear it in the game's audio.
+
+| Action | How |
+| --- | --- |
+| Play the English word | the `PLAY` button, or `P` |
+| Read the answer aloud | the target-language chip, or `Alt`+`P`, or `Alt`+`Shift`+`P` |
+| Stop | press it again, or `Esc` |
+
+`P` works whenever the caret is not in the input — which is the usual state right after a look-up,
+because submitting blurs the box. The modified shortcuts work even while you type, so nothing steals
+a `p` from a word like *happy*.
+
+On the phone side: **Settings → Speech** switches PC playback on or off, picks one of Gemini's 30
+prebuilt voices, and can mirror the clip to the phone's own speaker (*Also play on this phone*) for
+when you are away from the desk. If the server has no player, the app falls back to the phone's
+speech synthesis instead of going silent.
+
+The server picks a player automatically — `paplay`, `pw-play`, `ffplay`, `mpv` or `aplay`, in that
+order — and plays through whatever your default sink is. Set `tts.player` to force one.
+
+Gemini TTS returns headerless PCM, so the server wraps it in a WAV header and caches the result under
+`.cache/tts/`, keyed by the text, voice and instructions. Pressing play twice on the same word costs
+nothing the second time.
+
 
 ## Reachable as `translator.localhost`
 
@@ -126,8 +170,8 @@ the pairing page through nginx and read the token. The QR keeps pointing at
   launches it in `standalone`/`fullscreen` display mode.
 - **History** — the ☰ button lists the last 60 look-ups (stored on the phone only) and reopens any
   of them instantly without spending tokens.
-- **Read aloud** — the ResultCard buttons pronounce the English word (`en-US`) and read the
-  translation in the target language.
+- **Read aloud** — the `PLAY` chip pronounces the English word, the target-language chip reads the
+  answer; both go through the PC (see *Speech* above). Controlled from **Settings → Speech**.
 - **Keep the screen awake** — optional Screen Wake Lock, so the phone does not dim while it lies
   next to the keyboard.
 - **Target language** — switch in Settings; it applies to the next look-up only, no restart.
@@ -180,6 +224,9 @@ design/              icon master
 | `401 Not paired` | Scan the QR again, or use `New code` and rescan. |
 | `No OpenRouter API key` | Set `openrouter.apiKey` in `config.json` and restart. |
 | Look-up fails with a model error | Check the id against [openrouter.ai/models](https://openrouter.ai/models); `~` aliases and `:batch` variants also work. |
+| Nothing is heard on the PC | `tts.playOnHost` off, or no player installed. `paplay`, `pw-play`, `ffplay`, `mpv` and `aplay` all work; Settings says which one was found. |
+| Speech errors with a 400 about formats | Gemini TTS only returns `pcm`. If you point `tts.model` at another provider, adjust `tts.pcm` (or the `response_format`) to match. |
+| The play button does nothing | The answer is still streaming, or the input is focused — click the textarea away and press `P`, or use the button. |
 | Cameras will not scan the QR | Raise screen brightness, or copy the link and paste it into the phone's browser. |
 
 ## License

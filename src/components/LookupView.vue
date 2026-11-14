@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { CollapsibleContent, CollapsibleRoot, CollapsibleTrigger } from 'reka-ui'
-import { lookup, type Status } from '@/api'
+import { api, lookup, type Status } from '@/api'
 import { addHistory } from '@/lib/history'
 import { useWakeLock } from '@/lib/awake'
 import { useDisplayMode } from '@/lib/display'
 import { languageByCode } from '@/lib/languages'
-import { renderMarkdown } from '@/lib/markdown'
+import { plainText, renderMarkdown } from '@/lib/markdown'
 import { settings } from '@/lib/settings'
-import { speak, stopSpeaking } from '@/lib/speech'
+import { canSpeak, speak as speakLocally, stopSpeaking } from '@/lib/speech'
 import { toast } from '@/lib/toast'
 import HistorySheet from './HistorySheet.vue'
 import ResultCard from './ResultCard.vue'
@@ -29,9 +29,13 @@ const reasoningOpen = ref(false)
 const historyOpen = ref(false)
 const settingsOpen = ref(false)
 const input = ref<HTMLTextAreaElement | null>(null)
+const speaking = ref(false)
 
 let controller: AbortController | null = null
 let frame = 0
+let player: HTMLAudioElement | null = null
+
+const hostSpeech = computed(() => settings.hostSpeech && props.status.tts.available)
 
 useWakeLock(computed(() => settings.keepAwake))
 const { isFullscreen, isStandalone, toggle: toggleFullscreen } = useDisplayMode()
@@ -58,7 +62,7 @@ async function submit(): Promise<void> {
   lastQuery.value = text
   busy.value = true
   input.value?.blur()
-  if (settings.autospeak) speak(text, 'en-US')
+  if (settings.autospeak) void play('word')
 
   const active = new AbortController()
   controller = active
@@ -102,6 +106,56 @@ function abort(): void {
   busy.value = false
 }
 
+/**
+ * Speak through the PC: the phone asks the server, the server synthesises with
+ * the speech model and plays it on its own speakers, so a look-up is heard in
+ * the headphones you are already wearing. The phone's own voice is the fallback.
+ */
+async function play(scope: 'word' | 'answer' = 'word'): Promise<void> {
+  if (speaking.value) {
+    await stopSpeech()
+    return
+  }
+  const text = scope === 'word' ? lastQuery.value || query.value : plainText(answer.value)
+  if (!text.trim()) return
+
+  if (!hostSpeech.value) {
+    if (canSpeak()) speakLocally(text, scope === 'word' ? 'en-US' : target.value.speech)
+    else toast('No speech available here.', 'error')
+    return
+  }
+
+  speaking.value = true
+  try {
+    const result = await api.speak({
+      text: text.slice(0, 1200),
+      voice: settings.voice || undefined,
+    })
+    if (result.playError) toast(`PC playback: ${result.playError}`, 'error', 5000)
+    if (settings.playOnPhone) {
+      player?.pause()
+      player = new Audio(result.audio)
+      void player.play().catch(() => toast('This phone blocked playback.', 'error'))
+    }
+  } catch (error) {
+    toast(error instanceof Error ? error.message : 'Speech failed', 'error', 5000)
+  } finally {
+    speaking.value = false
+  }
+}
+
+async function stopSpeech(): Promise<void> {
+  player?.pause()
+  player = null
+  stopSpeaking()
+  try {
+    await api.stopSpeech()
+  } catch {
+    /* the server may be unreachable; nothing else to do */
+  }
+  speaking.value = false
+}
+
 function reuse(entry: { query: string; answer: string }): void {
   historyOpen.value = false
   lastQuery.value = entry.query
@@ -129,13 +183,48 @@ function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && busy.value) abort()
 }
 
+/**
+ * Shortcuts, in two flavours so nothing steals keys while you type a word:
+ *   Alt+P            play the word (works even with the caret in the box)
+ *   Alt+Shift+P      read the answer
+ *   P                play the word whenever the caret is not in the box — which
+ *                    is the usual state right after a look-up, since submitting
+ *                    blurs the input.
+ */
+function onGlobalKey(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && speaking.value) {
+    void stopSpeech()
+    return
+  }
+  const key = event.key.toLowerCase()
+  if (key !== 'p') return
+  const target = event.target as HTMLElement | null
+  const typing = Boolean(
+    target && (target.tagName === 'TEXTAREA' || target.tagName === 'INPUT' || target.isContentEditable),
+  )
+  const modifier = event.altKey || event.ctrlKey || event.metaKey
+
+  if (modifier) {
+    event.preventDefault()
+    void play(event.shiftKey ? 'answer' : 'word')
+    return
+  }
+  if (typing) return
+  if (lastQuery.value || query.value || answer.value) {
+    event.preventDefault()
+    void play('word')
+  }
+}
+
 onMounted(() => {
   if (settings.autofocus) void nextTick(() => input.value?.focus())
+  window.addEventListener('keydown', onGlobalKey)
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKey)
   abort()
-  stopSpeaking()
+  void stopSpeech()
   if (frame) cancelAnimationFrame(frame)
 })
 
@@ -202,6 +291,9 @@ onBeforeUnmount(() => {
         :text="answer"
         :streaming="busy"
         :target-native="target.speech"
+        :speaking="speaking"
+        :host-speech="hostSpeech"
+        @play="play"
       />
 
       <CollapsibleRoot v-if="settings.showReasoning && reasoning" v-model:open="reasoningOpen" class="think">

@@ -14,6 +14,8 @@ import {
 } from './auth.js'
 import { buildMessages } from './prompt.js'
 import { OpenRouterError, streamChat } from './openrouter.js'
+import { SpeechError, cacheDir, synthesize } from './tts.js'
+import { detectPlayer, playOnHost, playbackState, stopPlayback } from './audio.js'
 
 const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const distDir = path.join(projectRoot, 'dist')
@@ -64,6 +66,7 @@ app.get('/api/status', (req, res) => {
     port: config.server.port,
     hasApiKey: Boolean(config.openrouter.apiKey),
     language: config.language,
+    tts: speechStatus(),
     version: process.env.npm_package_version ?? null,
   })
 })
@@ -94,6 +97,28 @@ app.post('/api/auth/logout', (_req, res) => {
   res.setHeader('Set-Cookie', clearedCookie())
   res.json({ ok: true })
 })
+
+const VOICES = [
+  'Kore', 'Puck', 'Charon', 'Zephyr', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe',
+  'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi',
+  'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird',
+  'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
+]
+
+function speechStatus() {
+  const player = detectPlayer(config.tts.player)
+  return {
+    enabled: config.tts.enabled,
+    model: config.tts.model,
+    voice: config.tts.voice,
+    instructions: config.tts.instructions,
+    playOnHost: config.tts.playOnHost,
+    player: config.tts.player || player,
+    playerFound: Boolean(player),
+    available: config.tts.enabled && Boolean(config.openrouter.apiKey),
+    voices: VOICES,
+  }
+}
 
 app.get('/api/pair/link', (req, res) => {
   if (!isLocalRequest(req)) {
@@ -202,6 +227,85 @@ app.post('/api/lookup', requireAuth(token), async (req, res) => {
   } finally {
     clearInterval(heartbeat)
     res.end()
+  }
+})
+
+// Speech clips are keyed by content hash, so the phone can replay a cached one.
+app.get('/api/tts/:file', requireAuth(token), (req, res) => {
+  const raw = req.params.file
+  const name = path.basename(typeof raw === 'string' ? raw : '')
+  if (!/^[a-f0-9]{16}\.wav$/.test(name)) {
+    res.status(400).json({ error: 'Bad clip name.' })
+    return
+  }
+  const file = path.join(cacheDir(), name)
+  if (!fs.existsSync(file)) {
+    res.status(404).json({ error: 'No such clip.' })
+    return
+  }
+  res.setHeader('Content-Type', 'audio/wav')
+  res.setHeader('Cache-Control', 'private, max-age=604800')
+  fs.createReadStream(file).pipe(res)
+})
+
+app.post('/api/speak/stop', requireAuth(token), (_req, res) => {
+  res.json({ ok: true, stopped: stopPlayback() })
+})
+
+app.post('/api/speak', requireAuth(token), async (req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+  const voice = typeof req.body?.voice === 'string' ? req.body.voice : undefined
+  const instructions =
+    typeof req.body?.instructions === 'string' ? req.body.instructions : undefined
+
+  if (!text) {
+    res.status(400).json({ error: 'Nothing to say.' })
+    return
+  }
+  if (text.length > 1200) {
+    res.status(413).json({ error: 'Too long to speak. Hand it a word or a sentence.' })
+    return
+  }
+  if (!allowLookup(req.ip)) {
+    res.status(429).json({ error: 'Slow down a little.' })
+    return
+  }
+
+  try {
+    const speech = await synthesize(config, text, { voice, instructions })
+    let player: string | null = null
+    let playedOnHost = false
+    let playError: string | null = null
+
+    if (config.tts.playOnHost) {
+      try {
+        const playback = await playOnHost(speech.file, config.tts.player)
+        player = playback.player
+        playedOnHost = true
+      } catch (error) {
+        playError = error instanceof Error ? error.message : String(error)
+      }
+    }
+
+    const name = path.basename(speech.file)
+    res.json({
+      ok: true,
+      audio: `/api/tts/${name}`,
+      file: name,
+      bytes: speech.bytes,
+      cached: speech.cached,
+      model: speech.model,
+      voice: speech.voice,
+      playedOnHost,
+      player,
+      playError,
+    })
+  } catch (error) {
+    console.error('[speak]', error)
+    const known = error instanceof SpeechError
+    res.status(known ? error.status : 502).json({
+      error: known ? error.message : 'Speech synthesis failed. Check the server log.',
+    })
   }
 })
 

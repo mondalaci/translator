@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { plainText } from '@/lib/markdown'
-import { canSpeak, speak } from '@/lib/speech'
 import { toast } from '@/lib/toast'
 
 const props = defineProps<{
@@ -10,10 +9,17 @@ const props = defineProps<{
   text: string
   streaming: boolean
   targetNative: string
+  speaking: boolean
+  hostSpeech: boolean
 }>()
 
-const speakable = computed(() => canSpeak() && props.text.trim().length > 0)
+const emit = defineEmits<{ play: [scope: 'word' | 'answer'] }>()
+
+const speakable = computed(() => props.text.trim().length > 0)
 const targetLabel = computed(() => props.targetNative.split('-')[0]?.toUpperCase() ?? 'HU')
+
+/** Where the sound comes out: the PC when speech runs there, else this device. */
+const playHint = computed(() => (props.hostSpeech ? 'Play on the PC' : 'Play on this phone'))
 
 async function copy(): Promise<void> {
   try {
@@ -31,27 +37,27 @@ async function copy(): Promise<void> {
       <span class="result__query">{{ query }}</span>
       <span class="result__actions">
         <button
-          class="chip"
-          title="Say the English word"
-          :disabled="!speakable"
-          @click="speak(query, 'en-US')"
+          class="chip chip--play"
+          :class="{ 'chip--active': speaking }"
+          :title="speaking ? 'Stop' : `${playHint} — key P`"
+          @click="emit('play', 'word')"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 9h3.2L12 5.4v13.2L7.2 15H4z" />
-            <path d="M15.4 8.8a4.4 4.4 0 0 1 0 6.4" />
+            <path v-if="speaking" d="M16 9.5l4 5M20 9.5l-4 5" />
+            <path v-else d="M15.4 8.8a4.4 4.4 0 0 1 0 6.4M17.8 6.4a7.6 7.6 0 0 1 0 11.2" />
           </svg>
-          EN
+          {{ speaking ? 'STOP' : 'PLAY' }}
         </button>
         <button
           class="chip"
-          title="Read the translation aloud"
           :disabled="!speakable"
-          @click="speak(text, targetNative)"
+          :title="`Read the answer aloud — Alt+P`"
+          @click="emit('play', 'answer')"
         >
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M4 9h3.2L12 5.4v13.2L7.2 15H4z" />
             <path d="M15.4 8.8a4.4 4.4 0 0 1 0 6.4" />
-            <path d="M17.8 6.4a7.6 7.6 0 0 1 0 11.2" />
           </svg>
           {{ targetLabel }}
         </button>
@@ -125,6 +131,15 @@ async function copy(): Promise<void> {
 .chip:active {
   color: var(--fg-strong);
   background: var(--line);
+}
+
+.chip--play {
+  color: var(--fg);
+}
+
+.chip--active {
+  color: #06172e;
+  background: var(--accent);
 }
 
 .chip:disabled {

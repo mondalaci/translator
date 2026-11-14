@@ -31,6 +31,22 @@
     "allowRemotePairing": false
   },
 
+  "tts": {
+    "enabled": true,
+    "provider": "openrouter",
+    "model": "google/gemini-3.8-flash-tts",
+    "voice": "Kore",
+    "instructions": "",
+    "pcm": {
+      "sampleRate": 24000,
+      "channels": 1,
+      "bits": 16
+    },
+    "playOnHost": true,
+    "player": "",
+    "cache": true
+  },
+
   "rateLimit": {
     "lookupsPerMinute": 30
   }

@@ -28,10 +28,18 @@ defineProps<{ status: Status }>()
 
 const TOGGLES = [
   { key: 'autofocus', label: 'Focus the input on open', hint: 'Keyboard is ready before you tap' },
-  { key: 'autospeak', label: 'Read the word aloud', hint: 'English voice, slightly slowed' },
+  { key: 'autospeak', label: 'Play the word automatically', hint: 'As soon as a look-up starts' },
   { key: 'keepAwake', label: 'Keep the screen awake', hint: 'No dimming while the app is open' },
   { key: 'showReasoning', label: 'Show the model thinking', hint: 'When the server sends it' },
 ] as const
+
+const VOICE_LABELS: Record<string, string> = {
+  '': 'Server default',
+}
+
+function voiceLabel(name: string): string {
+  return VOICE_LABELS[name] ?? name
+}
 
 async function unpair(): Promise<void> {
   try {
@@ -101,6 +109,72 @@ async function unpair(): Promise<void> {
             </ul>
           </section>
 
+          <section class="group">
+            <span class="group__label">Speech</span>
+            <ul class="toggles">
+              <li class="toggles__row">
+                <span class="toggles__text">
+                  <span class="toggles__label">Speak through the PC</span>
+                  <span class="toggles__hint">
+                    {{ status.tts.model }} plays on the machine, not the phone
+                  </span>
+                </span>
+                <SwitchRoot v-model="settings.hostSpeech" class="switch" :disabled="!status.tts.available">
+                  <SwitchThumb class="switch__thumb" />
+                </SwitchRoot>
+              </li>
+              <li class="toggles__row">
+                <span class="toggles__text">
+                  <span class="toggles__label">Also play on this phone</span>
+                  <span class="toggles__hint">The same clip, in this browser</span>
+                </span>
+                <SwitchRoot v-model="settings.playOnPhone" class="switch">
+                  <SwitchThumb class="switch__thumb" />
+                </SwitchRoot>
+              </li>
+            </ul>
+
+            <label class="group__label group__label--spaced" for="voice-select">Voice</label>
+            <SelectRoot v-model="settings.voice">
+              <SelectTrigger id="voice-select" class="select" :disabled="!status.tts.available">
+                <SelectValue>{{ voiceLabel(settings.voice) }}</SelectValue>
+                <span aria-hidden="true" class="select__chevron">⌄</span>
+              </SelectTrigger>
+              <SelectPortal disabled>
+                <SelectContent class="select__content" position="popper" :side-offset="6">
+                  <SelectViewport class="select__viewport">
+                    <SelectItem class="select__item" value="">
+                      <SelectItemText>Server default</SelectItemText>
+                      <SelectItemIndicator class="select__tick">✓</SelectItemIndicator>
+                    </SelectItem>
+                    <SelectItem
+                      v-for="voice in status.tts.voices"
+                      :key="voice"
+                      class="select__item"
+                      :value="voice"
+                    >
+                      <SelectItemText>{{ voice }}</SelectItemText>
+                      <SelectItemIndicator class="select__tick">✓</SelectItemIndicator>
+                    </SelectItem>
+                  </SelectViewport>
+                </SelectContent>
+              </SelectPortal>
+            </SelectRoot>
+
+            <p class="info">
+              <kbd>P</kbd> plays the word · <kbd>Alt</kbd>+<kbd>P</kbd> reads the answer ·
+              <kbd>Esc</kbd> stops
+            </p>
+            <p v-if="!status.tts.enabled" class="warn">Speech is switched off in config.json.</p>
+            <p v-else-if="!status.hasApiKey" class="warn">
+              Look-ups and speech both need the OpenRouter key in config.json.
+            </p>
+            <p v-else-if="!status.tts.playerFound" class="warn">
+              No audio player found on the PC (paplay, pw-play, ffplay, mpv or aplay). Playback will
+              stay on this phone.
+            </p>
+          </section>
+
           <section class="group group--footer">
             <p class="foot">{{ status.model }}</p>
             <p v-if="!status.hasApiKey" class="warn">
@@ -132,6 +206,27 @@ async function unpair(): Promise<void> {
   font-size: 13px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.group__label--spaced {
+  margin-top: 14px;
+}
+
+.info {
+  margin: 10px 0 0;
+  color: var(--dimmer);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.info kbd {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 4px;
 }
 
 .select {
