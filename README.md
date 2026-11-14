@@ -100,6 +100,23 @@ phone's `Settings → Unpair this phone` clears its own cookie.
 Env overrides: `PORT`, `HOST`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`,
 `TRANSLATOR_TOKEN`, `TRANSLATOR_PUBLIC_URL`, `TRANSLATOR_CONFIG`.
 
+## Reachable as `translator.localhost`
+
+If you run nginx for `*.localhost` vhosts, `deploy/nginx-translator.localhost.conf` gives the app a
+desktop alias on port 80:
+
+```bash
+sudo cp deploy/nginx-translator.localhost.conf /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+# then: http://translator.localhost
+```
+
+Two details in that vhost are load-bearing: `proxy_buffering off` (look-ups stream token by token,
+and a buffering proxy would hold the whole answer back) and `allow 127.0.0.1; deny all;` — proxied
+requests look like they come from loopback, so without the ACL any machine on the LAN could reach
+the pairing page through nginx and read the token. The QR keeps pointing at
+`http://<lan-ip>:8787`, because phones cannot resolve `.localhost`.
+
 ## On the phone
 
 - **Look up** — type, hit the keyboard's search key or `Look up`. `Enter` submits, `Shift+Enter`

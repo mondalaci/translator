@@ -17,6 +17,13 @@ npm run typecheck  # both project references, no output
 npm run icons      # regenerate PWA icons from design/icon-1024.png
 ```
 
+The nginx vhost for the desktop alias (`http://translator.localhost`, port 80 → 8787) is versioned as
+`deploy/nginx-translator.localhost.conf`; the live copy is `/etc/nginx/sites-enabled/translator.localhost`
+and every `*.localhost` name is also listed on the landing page at `http://localhost/`
+(`/var/www/localhost/index.html`) — update both places together.
+`proxy_buffering off` there is required for SSE, and its loopback ACL is what stops a LAN client from
+reading the pairing token through the proxy.
+
 Always run `npm run typecheck` (or `npm run build`) before saying a change works — the SPA and the
 server are separate TS projects (`tsconfig.app.json`, `tsconfig.server.json`).
 
