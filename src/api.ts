@@ -1,20 +1,55 @@
-export interface SpeechInfo {
-  enabled: boolean
+export interface SessionSummary {
+  id: string
+  title: string
+  direction: 'en-hu' | 'hu-en'
+  term: string | null
+  imageUrl: string | null
+  imageCredit: string | null
+  createdAt: number
+  updatedAt: number
+  turns: number
+}
+
+export interface Message {
+  id: number
+  sessionId: string
+  role: 'user' | 'assistant'
+  content: string
+  createdAt: number
+}
+
+export interface RelatedImage {
+  src: string
+  credit: string | null
+  title: string | null
+}
+
+export interface Status {
   model: string
-  voice: string
-  instructions: string
-  playOnHost: boolean
-  player: string | null
-  playerFound: boolean
-  available: boolean
-  voices: string[]
+  hotkey: string
+  hasApiKey: boolean
+  languages: { source: { native: string }; target: { native: string } }
+  images: { enabled: boolean; wiki: string }
+  tts: {
+    enabled: boolean
+    model: string
+    voice: string
+    instructions: string
+    playOnHost: boolean
+    player: string | null
+    playerFound: boolean
+    available: boolean
+  }
+  database: string
+  configFile: string
+  usingDefaults: boolean
+  counts: { sessions: number; messages: number; images: number }
+  version: string | null
 }
 
 export interface SpeakResult {
   ok: true
-  /** Path of the cached clip, playable by this browser too. */
   audio: string
-  file: string
   bytes: number
   cached: boolean
   model: string
@@ -24,29 +59,9 @@ export interface SpeakResult {
   playError: string | null
 }
 
-export interface Status {
-  authenticated: boolean
-  pairingAvailable: boolean
-  local: boolean
-  model: string
-  port: number
-  hasApiKey: boolean
-  language: { target: string; targetName: string; nativeName: string }
-  tts: SpeechInfo
-  version: string | null
-}
-
-export interface PairedDevice {
-  ip: string
-  userAgent: string
-  firstSeen: number
-  lastSeen: number
-}
-
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     headers: { 'Content-Type': 'application/json' },
-    credentials: 'same-origin',
     ...init,
   })
   const text = await response.text()
@@ -59,50 +74,51 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   status: () => request<Status>('/api/status'),
-  login: (token: string) =>
-    request<{ ok: true }>('/api/auth/login', {
+  sessions: (q = '') => request<{ sessions: SessionSummary[] }>(`/api/sessions?q=${encodeURIComponent(q)}`),
+  session: (id: string) =>
+    request<{ session: SessionSummary; messages: Message[]; image: RelatedImage | null }>(
+      `/api/sessions/${id}`,
+    ),
+  removeSession: (id: string) =>
+    request<{ ok: boolean }>(`/api/sessions/${id}`, { method: 'DELETE' }),
+  setDirection: (id: string, direction: 'en-hu' | 'hu-en') =>
+    request<{ ok: true; direction: string }>(`/api/sessions/${id}/direction`, {
       method: 'POST',
-      body: JSON.stringify({ token }),
+      body: JSON.stringify({ direction }),
     }),
-  logout: () => request<{ ok: true }>('/api/auth/logout', { method: 'POST' }),
-  pairLink: () =>
-    request<{ url: string; model: string; language: Status['language'] }>('/api/pair/link'),
-  rotate: () => request<{ ok: true; url: string }>('/api/auth/rotate', { method: 'POST' }),
-  devices: () => request<{ devices: PairedDevice[] }>('/api/devices'),
-  speak: (body: { text: string; voice?: string; instructions?: string }) =>
+  speak: (body: { text: string; voice?: string }) =>
     request<SpeakResult>('/api/speak', { method: 'POST', body: JSON.stringify(body) }),
   stopSpeech: () => request<{ ok: true; stopped: boolean }>('/api/speak/stop', { method: 'POST' }),
 }
 
-export interface LookupHandlers {
-  onStart?(model: string): void
-  onDelta(text: string): void
-  onReasoning?(text: string): void
-  onDone?(): void
-}
-
-interface Event {
-  type: 'start' | 'delta' | 'reasoning' | 'done' | 'error'
-  text?: string
-  model?: string
-  message?: string
-}
+export type ChatEvent =
+  | {
+      type: 'meta'
+      sessionId: string
+      direction: 'en-hu' | 'hu-en'
+      term: string | null
+      fresh: boolean
+      userMessageId: number | null
+      image: RelatedImage | null
+    }
+  | { type: 'delta'; text: string }
+  | { type: 'done'; usage: Record<string, unknown> | null; model: string }
+  | { type: 'error'; status: number; message: string }
 
 const NL = String.fromCharCode(10)
 
-export async function lookup(
-  query: string,
-  handlers: LookupHandlers,
+/** Streams one turn. The caller appends deltas as they arrive. */
+export async function chat(
+  body: { text: string; sessionId?: string; direction?: 'en-hu' | 'hu-en' },
+  onEvent: (event: ChatEvent) => void,
   signal: AbortSignal,
-  target?: { name: string; native: string },
 ): Promise<void> {
-  const response = await fetch('/api/lookup', {
+  const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query, targetName: target?.name, nativeName: target?.native }),
+    body: JSON.stringify(body),
     signal,
   })
-
   if (!response.ok || !response.body) {
     const text = await response.text().catch(() => '')
     let message = response.statusText
@@ -117,18 +133,13 @@ export async function lookup(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-
   const handle = (line: string) => {
     const trimmed = line.trim()
     if (!trimmed.startsWith('data:')) return
-    const event = JSON.parse(trimmed.slice(5).trim()) as Event
-    if (event.type === 'start') handlers.onStart?.(event.model ?? '')
-    else if (event.type === 'reasoning' && event.text) handlers.onReasoning?.(event.text)
-    else if (event.type === 'delta' && event.text) handlers.onDelta(event.text)
-    else if (event.type === 'done') handlers.onDone?.()
-    else if (event.type === 'error') throw new Error(event.message ?? 'Look-up failed.')
+    const event = JSON.parse(trimmed.slice(5).trim()) as ChatEvent
+    if (event.type === 'error') throw new Error(event.message)
+    onEvent(event)
   }
-
   try {
     for (;;) {
       const { done, value } = await reader.read()
@@ -143,4 +154,3 @@ export async function lookup(
     reader.releaseLock()
   }
 }
-

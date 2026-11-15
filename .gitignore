@@ -1,9 +1,9 @@
 node_modules/
 dist/
-config.json
+.data/
+.cache/
 config.mjs
 config.local.*
-.cache/
 *.log
 .DS_Store
 .vite/

@@ -1,30 +1,24 @@
-import type { Config } from './config.js'
-
-export interface ChatMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-}
+import type { TranslatorConfig } from './config.js'
+import type { Turn } from './prompt.js'
 
 export interface StreamSink {
-  /** Visible answer text. */
   onDelta(text: string): void
-  /** Reasoning tokens, only emitted when `openrouter.reasoning.exclude` is false. */
   onReasoning?(text: string): void
 }
 
-export interface StreamResult {
+export interface ChatResult {
   model: string
   finishReason: string | null
   usage: Record<string, unknown> | null
 }
 
-export class OpenRouterError extends Error {
+export class ChatError extends Error {
   constructor(
     message: string,
     readonly status: number,
   ) {
     super(message)
-    this.name = 'OpenRouterError'
+    this.name = 'ChatError'
   }
 }
 
@@ -34,12 +28,14 @@ interface Delta {
 }
 
 interface Chunk {
-  id?: string
   model?: string
   choices?: { delta?: Delta; finish_reason?: string | null }[]
   usage?: Record<string, unknown> | null
   error?: { message?: string; code?: number | string } | string
 }
+
+const DONE_MARKER = ['[', 'DONE', ']'].join('')
+const NL = String.fromCharCode(10)
 
 function describeError(error: Chunk['error']): string | undefined {
   if (!error) return undefined
@@ -48,7 +44,15 @@ function describeError(error: Chunk['error']): string | undefined {
   return `${error.message ?? 'unknown OpenRouter error'}${code}`
 }
 
-function buildBody(config: Config, messages: ChatMessage[]) {
+function safeParse(value: string): Chunk | undefined {
+  try {
+    return JSON.parse(value) as Chunk
+  } catch {
+    return undefined
+  }
+}
+
+function buildBody(config: TranslatorConfig, messages: Turn[]) {
   const { openrouter } = config
   const reasoning = openrouter.reasoning ?? {}
   return {
@@ -64,27 +68,16 @@ function buildBody(config: Config, messages: ChatMessage[]) {
   }
 }
 
-const DONE_MARKER = ['[', 'DONE', ']'].join('')
-const NL = String.fromCharCode(10)
-
-function safeParse(value: string): Chunk | undefined {
-  try {
-    return JSON.parse(value) as Chunk
-  } catch {
-    return undefined
-  }
-}
-
 export async function streamChat(
-  config: Config,
-  messages: ChatMessage[],
+  config: TranslatorConfig,
+  messages: Turn[],
   sink: StreamSink,
   signal?: AbortSignal,
-): Promise<StreamResult> {
+): Promise<ChatResult> {
   const { openrouter } = config
   if (!openrouter.apiKey) {
-    throw new OpenRouterError(
-      'No OpenRouter API key. Put it in config.json (openrouter.apiKey) or OPENROUTER_API_KEY.',
+    throw new ChatError(
+      'No OpenRouter API key. Put it in config.mjs (openrouter.apiKey) or OPENROUTER_API_KEY.',
       400,
     )
   }
@@ -110,7 +103,7 @@ export async function streamChat(
       describeError(safeParse(text)?.error) ||
       text.slice(0, 300) ||
       `${response.status} ${response.statusText}`
-    throw new OpenRouterError(message, response.status)
+    throw new ChatError(message, response.status)
   }
 
   const decoder = new TextDecoder()
@@ -127,7 +120,7 @@ export async function streamChat(
     const chunk = safeParse(payload)
     if (!chunk) return
     const problem = describeError(chunk.error)
-    if (problem) throw new OpenRouterError(problem, 502)
+    if (problem) throw new ChatError(problem, 502)
     if (chunk.model) model = chunk.model
     if (chunk.usage) usage = chunk.usage
     const choice = chunk.choices?.[0]
@@ -145,7 +138,7 @@ export async function streamChat(
       buffer += decoder.decode(value, { stream: true })
       const lines = buffer.split(NL)
       buffer = lines.pop() ?? ''
-      lines.forEach(handleLine)
+      for (const line of lines) handleLine(line)
     }
     handleLine(buffer)
   } finally {
@@ -154,5 +147,3 @@ export async function streamChat(
 
   return { model, finishReason, usage }
 }
-
-

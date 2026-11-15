@@ -1,49 +1,51 @@
 # translator
 
-A pocket English dictionary served from your own PC.
+A bilingual English↔Hungarian dictionary that lives in a desktop overlay you summon with a hotkey.
 
-You run it on the desktop, point your phone at the QR code it prints, and from then on the phone is
-a full-screen, pitch-black look-up window: type a word or phrase, get a plain-English definition,
-the Hungarian meanings — with pronunciation, senses and examples — streamed back word by word from
-OpenRouter.
+Press **Ctrl+Alt+Shift+F12** and a chat window appears over whatever you are doing. Type a word in
+either language — the direction is detected — and you get its translation, IPA pronunciation, an
+English definition, one sense per line, and examples. Then keep going: `vs haste`, `how formal is
+this`, `more examples`. Comparisons are what make nuances stick, and every thread is saved in SQLite.
 
-Press play and the answer is spoken **on the PC**, not on the phone, so a look-up is heard in the
-headphones you are already wearing mid-game.
+Built for looking things up *while playing*: the window is pitch black, the answers are short, and
+the pronunciation comes out of **this machine's** speakers, so you hear it in the same headphones the
+game is using.
 
-Built for the dark: the phone UI is pure `#000` with dimmed secondary text, so glancing at it next to
-your keyboard while gaming does not blind you.
+![the overlay over the desktop](docs/screenshot-overlay.png)
 
-![the phone app, dark](docs/screenshot-phone.png)
-
-| Pairing on the PC | Speech settings | History |
-| --- | --- | --- |
-| ![pairing qr](docs/screenshot-pairing.png) | ![speech settings](docs/screenshot-speech.png) | ![history sheet](docs/screenshot-history.png) |
-
-- **Stack** — Vue 3 + Reka UI + Vite on the front, a small Express server on the back.
-- **Model** — `deepseek/deepseek-v4.1-flash` by default, any OpenRouter model id works.
-- **Speech** — `google/gemini-3.8-flash-tts` through OpenRouter's `/audio/speech`, played on the PC.
-- **Auth** — the QR code carries a one-time link that swaps the shared token for a long-lived cookie.
-- **PWA** — installable, works as a standalone/full-screen app, opens offline.
+| Sessions | Settings |
+| --- | --- |
+| ![session list](docs/screenshot-sessions.png) | ![settings](docs/screenshot-settings.png) |
 
 ## How it works
 
 ```
- phone (PWA)                 your PC                     OpenRouter
- ┌──────────┐   HTTPS/HTTP  ┌────────────────┐  HTTPS   ┌──────────┐
- │ lookup   │──────────────▶│ express server │─────────▶│ chat API │
- │ UI (Vue) │◀── SSE ───────│  + token auth  │◀── SSE ──│          │
- └──────────┘   same Wi-Fi  └────────────────┘          └──────────┘
-       ▲                          │
-       └──── QR pairing ──────────┘
+  Ctrl+Alt+Shift+F12
+        │
+        ▼
+┌───────────────────┐        ┌──────────────────┐        ┌────────────┐
+│ Electron overlay  │──────▶ │ express + sqlite │──────▶ │ OpenRouter │
+│ (Vue chat window) │◀──SSE──│  .data/*.db      │◀──SSE──│ deepseek   │
+└───────────────────┘        └──────────────────┘        └────────────┘
+        │                             │
+        └── pronounce ──▶ paplay ─────┘  Gemini 3.8 Flash TTS → your speakers
+                          │
+                          └── picture ──▶ Wikipedia lead image (no AI, no key)
 ```
 
-The API key never leaves the PC: the phone only ever talks to your own server.
+- **Overlay** — Electron: one frameless, transparent, always-on-top window that stays hidden until
+  the hotkey. `globalShortcut` grabs the key through X11, which is why this works where the various
+  "osd" npm packages could not.
+- **Chat** — the API server holds the thread, so a follow-up keeps the earlier words in context.
+- **Storage** — `node:sqlite`, one file under `.data/`. Sessions survive restarts and are searchable.
+- **Speech** — `google/gemini-3.8-flash-tts` through OpenRouter's `/audio/speech`, played locally.
+- **Pictures** — the Wikipedia lead image for the headword, fetched once and cached.
 
 ## Requirements
 
-- Node.js 20.19+ (24 or 22 recommended)
+- Node.js 22.5+ (for `node:sqlite`) and an **X11** session
 - An [OpenRouter](https://openrouter.ai/keys) API key
-- Your phone and the PC on the same Wi-Fi network
+- An audio player for the pronunciation: `paplay`, `pw-play`, `ffplay`, `mpv` or `aplay`
 
 ## Quick start
 
@@ -51,189 +53,117 @@ The API key never leaves the PC: the phone only ever talks to your own server.
 git clone https://github.com/mondalaci/translator.git
 cd translator
 npm install
+cp config.example.mjs config.mjs    # then put your key in it
 npm run build
-npm start
+pm2 start ecosystem.config.cjs      # or: npm start, plus npm run overlay in another terminal
+pm2 save
 ```
 
-The first start writes `config.json` next to `package.json` and prints something like:
+OpenRouter key: `openrouter.apiKey` in `config.mjs`, or `OPENROUTER_API_KEY` in the environment.
 
+Two processes, both in `ecosystem.config.cjs`:
+
+| pm2 app | what it is |
+| --- | --- |
+| `translator` | the API on `127.0.0.1:8787` |
+| `translator-overlay` | the window, and the hotkey |
+
+```bash
+pm2 restart translator translator-overlay   # after a config change or a rebuild
+pm2 logs translator-overlay                 # shows the hotkey it grabbed, and any load failure
 ```
-  translator is running
-  pc      http://localhost:8787
-  phone   http://192.168.1.216:8787
-  model   deepseek/deepseek-v4.1-flash
-  target  Hungarian (magyar)
-  config  /home/you/translator/config.json
-  pair    http://192.168.1.216:8787/auth?k=A5f…-token…
-```
 
-Put your OpenRouter key into `config.json` → `openrouter.apiKey`, restart, then open
-`http://localhost:8787` on the PC. That page shows the QR code — it is only served to `localhost`,
-so no other machine on the network can read your pairing token.
+## Using the overlay
 
-Alternatively skip the file and export `OPENROUTER_API_KEY=sk-or-…` before `npm start`.
+| Key | Does |
+| --- | --- |
+| *hotkey* | show / hide the overlay (default `Ctrl+Alt+Shift+F12`) |
+| `Enter` | look up / send the follow-up |
+| `Shift+Enter` | newline |
+| `P` | say the session's word out loud |
+| `Ctrl+K` | session list |
+| `Ctrl+N` | new session |
+| `Esc` | stop a running look-up, else leave a panel, else hide |
+| click any **bold** word | hear *that word* — the initial word, a follow-up's new word, either side of a `vs` |
 
-## Pairing the phone
+**Pronunciations.** Every word the model translates is bold, and each bold word is its own button.
+Nothing reads the whole answer aloud — a paragraph of TTS is noise when you want one word.
 
-1. Open `http://localhost:8787` on the PC. A QR code appears.
-2. Scan it with the phone's camera. The phone opens `http://<pc-ip>:8787/auth?k=<token>`, the server
-   trades the token for a signed cookie and redirects to the app. One tap, nothing to type.
-3. Add it to the home screen (share sheet → *Add to Home Screen*) so it launches full screen with
-   the app icon. From then on it is a normal app that keeps working until you unpair it.
+**Follow-ups.** The thread keeps its direction and its history, so `vs haste`, `in what context`, or
+`give me three collocations` land where you expect. A later turn that introduces a new word gets the
+full treatment: IPA, senses, examples.
 
-`New code` on the pairing page rotates the token: every old link and session dies immediately. The
-phone's `Settings → Unpair this phone` clears its own cookie.
+**Pictures.** The first turn of a session asks Wikipedia for the article's lead image. Concrete words
+(`water`, `liquid`) come back with a photo; abstract ones (`haste`, `fast`) have no article image and
+simply show none — nothing is generated, and a wrong picture is worse than no picture.
 
-## Configuration (`config.json`)
+## Configuration (`config.mjs`)
+
+`config.mjs` is git-ignored runtime configuration and a real ES module, so comments and computed
+values work. Missing keys fall back to `config.example.mjs`.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `server.port` | `8787` | Port to listen on. |
-| `server.host` | `0.0.0.0` | Bind address. `0.0.0.0` is what makes it reachable from the phone. |
-| `server.publicUrl` | `""` | Overrides the host in the pairing link, e.g. a tailscale name. Auto-detected when empty. |
+| `hotkey` | `Control+Alt+Shift+F12` | Any Electron accelerator: `Super+Slash`, `Control+Shift+Space`, … |
+| `server.port` / `server.host` | `8787` / `127.0.0.1` | Loopback only — nothing off this machine talks to it. |
 | `openrouter.apiKey` | `""` | Your key. Env: `OPENROUTER_API_KEY`. |
-| `openrouter.model` | `deepseek/deepseek-v4.1-flash` | Any OpenRouter model id. |
-| `openrouter.temperature` | `0.2` | Low keeps look-ups factual and repeatable. |
-| `openrouter.maxTokens` | `700` | Answers are meant to be short. |
-| `openrouter.reasoning` | `{ effort: "low", exclude: true }` | Dictionary work needs no thinking budget; set `exclude: false` to stream it to the app. |
-| `language.targetName` / `nativeName` | `Hungarian` / `magyar` | Default target; the phone can pick another in Settings. |
-| `auth.token` | generated | Shared secret. Generated on first start. Env: `TRANSLATOR_TOKEN`. |
-| `auth.sessionDays` | `365` | How long a paired phone stays signed in. |
-| `auth.allowRemotePairing` | `false` | Let non-localhost visitors see the pairing QR. Off for a reason. |
-| `tts.enabled` | `true` | Master switch for speech. |
-| `tts.model` | `google/gemini-3.8-flash-tts` | Any speech model on OpenRouter's `/audio/speech`. |
-| `tts.voice` | `Kore` | Prebuilt Gemini voice (30 of them, listed in the app's Settings). |
-| `tts.instructions` | `""` | Optional delivery direction, e.g. `calm and clear, slightly slow`. |
-| `tts.pcm` | `24000` / `1` / `16` | Format of the returned PCM; only change it for a non-Gemini model. |
-| `tts.playOnHost` | `true` | Play the clip through the PC's default audio sink. |
-| `tts.player` | `""` | Force a player instead of auto-detecting one. |
-| `tts.cache` | `true` | Reuse `.cache/tts/` clips keyed by text, voice and instructions. |
-| `rateLimit.lookupsPerMinute` | `30` | Per-IP guard against runaway loops burning credits. Speech shares this budget. |
+| `openrouter.model` | `deepseek/deepseek-v4.1-flash` | Any chat model. |
+| `openrouter.temperature` / `maxTokens` | `0.25` / `1400` | Dictionary work wants low temperature and short answers. |
+| `languages.source` / `languages.target` | English / Hungarian | The two sides; the labels in the window come from here. |
+| `images.enabled` / `images.wiki` / `images.width` | `true` / `en` / `640` | Wikipedia project and thumbnail width. |
+| `tts.model` / `tts.voice` | `google/gemini-3.8-flash-tts` / `Kore` | Speech model and one of Gemini's 30 voices. |
+| `tts.instructions` | `""` | Delivery direction, e.g. `calm and clear, slightly slow`. |
+| `tts.playOnHost` / `tts.player` | `true` / auto | Play on this machine; force a player instead of detecting one. |
+| `chat.maxHistory` | `40` | Turns of transcript sent back to the model. |
+| `chat.extraInstructions` | `""` | Appended to the system prompt — the easy way to tune the style. |
 
 Env overrides: `PORT`, `HOST`, `OPENROUTER_API_KEY`, `OPENROUTER_MODEL`, `OPENROUTER_BASE_URL`,
-`TRANSLATOR_TOKEN`, `TRANSLATOR_PUBLIC_URL`, `TRANSLATOR_CONFIG`.
-
-## Speech: play it on the PC
-
-The play button (and its shortcut) does not use the phone's built-in voice. The phone asks the
-server, the server synthesises the text with `google/gemini-3.8-flash-tts` through OpenRouter's
-OpenAI-compatible `/audio/speech` endpoint, and then plays the clip **on the machine running the
-server** — the desktop with the headset on it. That is the point: you look a word up on the phone
-and hear it in the game's audio.
-
-| Action | How |
-| --- | --- |
-| Play the English word | the `PLAY` button, or `P` |
-| Read the answer aloud | the target-language chip, or `Alt`+`P`, or `Alt`+`Shift`+`P` |
-| Stop | press it again, or `Esc` |
-
-`P` works whenever the caret is not in the input — which is the usual state right after a look-up,
-because submitting blurs the box. The modified shortcuts work even while you type, so nothing steals
-a `p` from a word like *happy*.
-
-On the phone side: **Settings → Speech** switches PC playback on or off, picks one of Gemini's 30
-prebuilt voices, and can mirror the clip to the phone's own speaker (*Also play on this phone*) for
-when you are away from the desk. If the server has no player, the app falls back to the phone's
-speech synthesis instead of going silent.
-
-The server picks a player automatically — `paplay`, `pw-play`, `ffplay`, `mpv` or `aplay`, in that
-order — and plays through whatever your default sink is. Set `tts.player` to force one.
-
-Gemini TTS returns headerless PCM, so the server wraps it in a WAV header and caches the result under
-`.cache/tts/`, keyed by the text, voice and instructions. Pressing play twice on the same word costs
-nothing the second time.
-
-
-## Reachable as `translator.localhost`
-
-If you run nginx for `*.localhost` vhosts, `deploy/nginx-translator.localhost.conf` gives the app a
-desktop alias on port 80:
-
-```bash
-sudo cp deploy/nginx-translator.localhost.conf /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-# then: http://translator.localhost
-```
-
-Two details in that vhost are load-bearing: `proxy_buffering off` (look-ups stream token by token,
-and a buffering proxy would hold the whole answer back) and `allow 127.0.0.1; deny all;` — proxied
-requests look like they come from loopback, so without the ACL any machine on the LAN could reach
-the pairing page through nginx and read the token. The QR keeps pointing at
-`http://<lan-ip>:8787`, because phones cannot resolve `.localhost`.
-
-## On the phone
-
-- **Look up** — type, hit the keyboard's search key or `Look up`. `Enter` submits, `Shift+Enter`
-  makes a newline, `Escape` stops a running request. The answer streams in as the model writes.
-- **Full screen** — the ⤢ button uses the Fullscreen API. On iOS Safari that API does not exist for
-  installed web apps, so the button tells you to install it instead; once installed, the manifest
-  launches it in `standalone`/`fullscreen` display mode.
-- **History** — the ☰ button lists the last 60 look-ups (stored on the phone only) and reopens any
-  of them instantly without spending tokens.
-- **Read aloud** — the `PLAY` chip pronounces the English word, the target-language chip reads the
-  answer; both go through the PC (see *Speech* above). Controlled from **Settings → Speech**.
-- **Keep the screen awake** — optional Screen Wake Lock, so the phone does not dim while it lies
-  next to the keyboard.
-- **Target language** — switch in Settings; it applies to the next look-up only, no restart.
-
-## Run it always
-
-```bash
-pm2 start ecosystem.config.cjs   # then: pm2 save
-```
-
-`pm2 save` matters: the saved list is what `pm2 resurrect` replays on boot through the
-`pm2-<user>.service` systemd unit. Without it the app comes back as a 502 on the next reboot.
-
-`npm start` (or `pm2 start npm --name translator -- start`) is the plain foreground variant; `Ctrl+C`
-stops it, and a browser hitting `translator.localhost` then gets a 502, because nginx is proxying to a
-port nothing is listening on. `config.json` and `dist/` are git-ignored, so rebuilding never touches
-your secrets.
+`TRANSLATOR_HOTKEY`, `TRANSLATOR_DB`, `TRANSLATOR_CONFIG`, `TRANSLATOR_OVERLAY_URL`.
 
 ## Development
 
 ```bash
-npm run dev        # vite on :5180 (proxies /api to :8787) + the server on :8787
-npm run build      # type-check the SPA and the server, then build dist/
-npm start          # serve dist/ and the API from one process
-npm run typecheck  # vue-tsc + tsc, no output
+npm run dev            # API on :8787 (tsx watch) + vite on :5180
+npm run dev:overlay    # the overlay against the vite dev server
+npm run build          # type-check both projects, then build dist/
+npm run typecheck      # vue-tsc + tsc, no output
 ```
 
-Use `npm run build && npm start` when you want to try it on the phone — the dev server binds to
-localhost, so the phone cannot reach it without extra fiddling.
-
 ```
-src/                 Vue app (phone UI, pairing screen)
-src/lib/             markdown, settings, history, speech, wake lock, display mode
-server/              Express: config, auth, OpenRouter streaming, prompt
-public/              PWA manifest, service worker, icons
-design/              icon master
+electron/main.mjs      overlay window, global shortcut, IPC
+src/components/        ChatView, MessageCard, SessionPanel, SettingsPanel
+src/lib/               markdown, settings, toasts
+server/index.ts        routes: chat (SSE), sessions, image, speak
+server/prompt.ts       the dictionary prompt — the product lives here
+server/db.ts           sqlite schema and queries
+server/tts.ts          OpenRouter /audio/speech, PCM → WAV, cache
+server/audio.ts        host playback (paplay and friends)
+server/images.ts       Wikipedia lead image, cached
 ```
-
-## Security notes
-
-- The API key lives only in `config.json` on the PC; the phone talks to your server, never to
-  OpenRouter.
-- The pairing QR is served to loopback requests only. `auth.allowRemotePairing: true` lifts that,
-  which means anyone on the LAN who opens the page can read the token — leave it off.
-- Sessions are an HMAC of the token, so the cookie never carries the secret itself; rotating the
-  token invalidates every session at once.
-- Traffic inside your LAN is plain HTTP. For untrusted networks, put it behind a TLS reverse proxy,
-  or keep `server.host` on `127.0.0.1` and reach it through an SSH tunnel.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
-| `502` from `translator.localhost` | The app is not running — nginx is proxying to a dead port. `pm2 start ecosystem.config.cjs && pm2 save`, or `npm start`. |
-| Phone cannot connect | Phone and PC on the same Wi-Fi? Some routers have "AP isolation" on, which blocks device-to-device traffic. |
-| `401 Not paired` | Scan the QR again, or use `New code` and rescan. |
-| `No OpenRouter API key` | Set `openrouter.apiKey` in `config.json` and restart. |
-| Look-up fails with a model error | Check the id against [openrouter.ai/models](https://openrouter.ai/models); `~` aliases and `:batch` variants also work. |
-| Nothing is heard on the PC | `tts.playOnHost` off, or no player installed. `paplay`, `pw-play`, `ffplay`, `mpv` and `aplay` all work; Settings says which one was found. |
-| Speech errors with a 400 about formats | Gemini TTS only returns `pcm`. If you point `tts.model` at another provider, adjust `tts.pcm` (or the `response_format`) to match. |
-| The play button does nothing | The answer is still streaming, or the input is focused — click the textarea away and press `P`, or use the button. |
-| Cameras will not scan the QR | Raise screen brightness, or copy the link and paste it into the phone's browser. |
+| The hotkey does nothing | Another app already owns it — `pm2 logs translator-overlay` says so. Change `hotkey` in `config.mjs` and restart. |
+| The overlay shows a connection error | The API is not up: `pm2 restart translator`. The window retries every 1.5 s. |
+| No window, though the process runs | `ELECTRON_RUN_AS_NODE=1` in the environment makes Electron behave as plain Node. `scripts/overlay.sh` unsets it; do not launch the binary directly. |
+| The overlay quits right after starting | Its `userData` and single-instance lock collided with another Electron app. `main.mjs` sets both before `whenReady` — keep it that way. |
+| Nothing is heard | `tts.playOnHost` off, or no player installed. Settings shows which one was found. |
+| An empty answer card | The stream ended without tokens (usually a server restart mid-request); the card is dropped with a toast. |
+| Speech errors with a 400 about formats | Gemini TTS only returns `pcm`; if you point `tts.model` elsewhere, match `tts.pcm` to that model. |
+
+## Security notes
+
+- The API binds to loopback. Nothing leaves this machine except the OpenRouter request and the
+  Wikipedia lookup.
+- The API key lives in `config.mjs` (git-ignored) or the environment; the renderer never sees it.
+- `contextIsolation` is on, Node is off in the renderer, and the preload exposes three methods:
+  hide, quit, and the blur preference.
+
+Still available: `deploy/nginx-translator.localhost.conf` puts the same UI on
+`http://translator.localhost` (port 80 → 8787, loopback-only, `proxy_buffering off` so the answer
+still streams), for when a browser tab is more convenient.
 
 ## License
 

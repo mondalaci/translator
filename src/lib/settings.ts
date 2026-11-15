@@ -1,35 +1,29 @@
 import { reactive, watch } from 'vue'
 
-const KEY = 'translator.settings.v1'
+const KEY = 'translator.overlay.v1'
 
 export interface Settings {
-  /** Open the keyboard as soon as the app is focused. */
-  autofocus: boolean
-  /** Speak the looked-up word as soon as the answer starts arriving. */
-  autospeak: boolean
-  /** Use the speech model on the PC instead of the phone's own voice. */
-  hostSpeech: boolean
-  /** Also play the clip in this browser, not just on the PC. */
-  playOnPhone: boolean
-  /** Preferred voice name; empty means the server default. */
+  /** Voice override; empty means the voice from config.mjs. */
   voice: string
-  /** Show the model's reasoning stream when the server sends it. */
-  showReasoning: boolean
-  /** Hold a screen wake lock while the app is in the foreground. */
-  keepAwake: boolean
-  /** Target language code (see lib/languages.ts). */
-  code: string
+  /** Ask for a related picture on the first turn. */
+  images: boolean
+  /** Play the speech on this machine instead of only the phone. */
+  playOnHost: boolean
+  /** Read the headword aloud as soon as a look-up starts. */
+  autoSpeak: boolean
+  /** Hide the overlay when it loses focus. */
+  hideOnBlur: boolean
+  /** Session reopened on the next launch. */
+  lastSessionId: string
 }
 
 const DEFAULTS: Settings = {
-  autofocus: true,
-  autospeak: false,
-  hostSpeech: true,
-  playOnPhone: false,
   voice: '',
-  showReasoning: false,
-  keepAwake: false,
-  code: 'hu',
+  images: true,
+  playOnHost: true,
+  autoSpeak: false,
+  hideOnBlur: false,
+  lastSessionId: '',
 }
 
 function load(): Partial<Settings> {
@@ -48,7 +42,7 @@ watch(
     try {
       localStorage.setItem(KEY, JSON.stringify(value))
     } catch {
-      /* private mode: settings simply do not persist */
+      /* ignore private-mode failures */
     }
   },
   { deep: true },

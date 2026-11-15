@@ -1,109 +1,64 @@
-import { networkInterfaces } from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import express from 'express'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { configPath, loadConfig, randomToken, saveToken, safeEqual } from './config.js'
+import { loadConfig, type TranslatorConfig } from './config.js'
 import {
-  clearedCookie,
-  isAuthenticated,
-  listDevices,
-  requireAuth,
-  sessionCookie,
-  touchDevice,
-} from './auth.js'
-import { buildMessages } from './prompt.js'
-import { OpenRouterError, streamChat } from './openrouter.js'
+  addMessage,
+  createSession,
+  deleteSession,
+  getSession,
+  listSessions,
+  openDatabase,
+  pathOfDatabase,
+  stats,
+  updateSession,
+} from './db.js'
+import { describeDirection, guessDirection, type Direction } from './direction.js'
+import { imageBytes, lookupImage } from './images.js'
+import { buildMessages, type Turn } from './prompt.js'
+import { ChatError, streamChat } from './chat.js'
 import { SpeechError, cacheDir, synthesize } from './tts.js'
-import { detectPlayer, playOnHost, playbackState, stopPlayback } from './audio.js'
+import { detectPlayer, playOnHost, stopPlayback } from './audio.js'
 
 const projectRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const distDir = path.join(projectRoot, 'dist')
 
-const { config, generatedToken, createdFile } = loadConfig()
-let token = config.auth.token
-
-const IGNORED_IFACES = /^(docker|veth|virbr|br-|tun|tap|tailscale|zt|wg|lo)/i
-const PREFERRED_IFACES = /^(en|eth|wl|wlan|wlp)/i
-
-function localAddress(): string {
-  const candidates: { name: string; address: string }[] = []
-  for (const [name, list] of Object.entries(networkInterfaces())) {
-    if (IGNORED_IFACES.test(name)) continue
-    for (const entry of list ?? []) {
-      if (entry.family === 'IPv4' && !entry.internal) candidates.push({ name, address: entry.address })
-    }
-  }
-  const preferred = candidates.find((c) => PREFERRED_IFACES.test(c.name))
-  return (preferred ?? candidates[0])?.address ?? '127.0.0.1'
-}
-
-function pairingUrl(): string {
-  const base =
-    config.server.publicUrl.trim() ||
-    `http://${localAddress()}:${config.server.port}`
-  return `${base.replace(/\/+$/, '')}/auth?k=${encodeURIComponent(token)}`
-}
+const loaded = await loadConfig()
+const config: TranslatorConfig = loaded.config
+openDatabase(config)
 
 const app = express()
 app.disable('x-powered-by')
-app.set('trust proxy', false)
-app.use(express.json({ limit: '32kb' }))
+app.use(express.json({ limit: '64kb' }))
 
-/** Requests arriving on loopback are "the PC itself" and may see the pairing QR. */
-function isLocalRequest(req: express.Request): boolean {
-  return config.auth.allowRemotePairing || req.ip === '127.0.0.1' || req.ip === '::1'
+const NL = String.fromCharCode(10)
+
+/** The overlay is a single person on one machine, so this is a brake, not a wall. */
+const hits = new Map<string, number[]>()
+function allowRequest(ip: string | undefined, perMinute = 40): boolean {
+  const key = ip ?? 'local'
+  const now = Date.now()
+  const recent = (hits.get(key) ?? []).filter((at) => now - at < 60_000)
+  if (recent.length >= perMinute) {
+    hits.set(key, recent)
+    return false
+  }
+  recent.push(now)
+  hits.set(key, recent)
+  return true
 }
 
-app.get('/api/status', (req, res) => {
-  const authenticated = isAuthenticated(req, token)
-  if (authenticated) touchDevice(req)
-  res.json({
-    authenticated,
-    pairingAvailable: isLocalRequest(req),
-    local: isLocalRequest(req),
-    model: config.openrouter.model,
-    port: config.server.port,
-    hasApiKey: Boolean(config.openrouter.apiKey),
-    language: config.language,
-    tts: speechStatus(),
-    version: process.env.npm_package_version ?? null,
-  })
-})
+function fail(res: express.Response, status: number, error: string): void {
+  res.status(status).json({ error })
+}
 
-app.get('/auth', (req, res) => {
-  const provided = typeof req.query.k === 'string' ? req.query.k : ''
-  if (!safeEqual(provided, token)) {
-    res.status(401).send(pairingFailurePage())
-    return
-  }
-  touchDevice(req)
-  res.setHeader('Set-Cookie', sessionCookie(token, config.auth.sessionDays))
-  res.redirect(302, '/')
-})
-
-app.post('/api/auth/login', (req, res) => {
-  const provided = typeof req.body?.token === 'string' ? req.body.token.trim() : ''
-  if (!safeEqual(provided, token)) {
-    res.status(401).json({ error: 'Wrong or expired code.' })
-    return
-  }
-  touchDevice(req)
-  res.setHeader('Set-Cookie', sessionCookie(token, config.auth.sessionDays))
-  res.json({ ok: true })
-})
-
-app.post('/api/auth/logout', (_req, res) => {
-  res.setHeader('Set-Cookie', clearedCookie())
-  res.json({ ok: true })
-})
-
-const VOICES = [
-  'Kore', 'Puck', 'Charon', 'Zephyr', 'Fenrir', 'Leda', 'Orus', 'Aoede', 'Callirrhoe', 'Autonoe',
-  'Enceladus', 'Iapetus', 'Umbriel', 'Algieba', 'Despina', 'Erinome', 'Algenib', 'Rasalgethi',
-  'Laomedeia', 'Achernar', 'Alnilam', 'Schedar', 'Gacrux', 'Pulcherrima', 'Achird',
-  'Zubenelgenubi', 'Vindemiatrix', 'Sadachbia', 'Sadaltager', 'Sulafat',
-]
+function titleFrom(text: string): string {
+  const first = text.trim().split(NL)[0] ?? text
+  const clipped = first.replace(/^["'([{]+|["')\]}.,!?]+$/g, '').trim()
+  return clipped.length > 60 ? `${clipped.slice(0, 57)}…` : clipped
+}
 
 function speechStatus() {
   const player = detectPlayer(config.tts.player)
@@ -116,69 +71,133 @@ function speechStatus() {
     player: config.tts.player || player,
     playerFound: Boolean(player),
     available: config.tts.enabled && Boolean(config.openrouter.apiKey),
-    voices: VOICES,
   }
 }
 
-app.get('/api/pair/link', (req, res) => {
-  if (!isLocalRequest(req)) {
-    res.status(403).json({ error: 'Pairing is only shown on the PC running translator.' })
-    return
-  }
-  res.json({ url: pairingUrl(), model: config.openrouter.model, language: config.language })
+app.get('/api/status', (_req, res) => {
+  res.json({
+    model: config.openrouter.model,
+    hotkey: config.hotkey,
+    hasApiKey: Boolean(config.openrouter.apiKey),
+    direction: describeDirection('en-hu', config.languages),
+    languages: config.languages,
+    images: { enabled: config.images.enabled, wiki: config.images.wiki },
+    tts: speechStatus(),
+    database: pathOfDatabase(),
+    configFile: loaded.file,
+    usingDefaults: loaded.usingDefaults,
+    counts: stats(),
+    version: process.env.npm_package_version ?? null,
+  })
 })
 
-app.get('/api/devices', (req, res) => {
-  if (!isLocalRequest(req)) {
-    res.status(403).json({ error: 'Only available on the PC running translator.' })
-    return
-  }
-  res.json({ devices: listDevices() })
+app.get('/api/sessions', (req, res) => {
+  const query = typeof req.query.q === 'string' ? req.query.q : ''
+  res.json({ sessions: listSessions(query) })
 })
 
-app.post('/api/auth/rotate', (req, res) => {
-  if (!isLocalRequest(req)) {
-    res.status(403).json({ error: 'Only available on the PC running translator.' })
+app.get('/api/sessions/:id', (req, res) => {
+  const id = req.params.id
+  const found = typeof id === 'string' ? getSession(id) : undefined
+  if (!found) {
+    fail(res, 404, 'No such session.')
     return
   }
-  token = randomToken()
-  saveToken(token)
-  res.setHeader('Set-Cookie', sessionCookie(token, config.auth.sessionDays))
-  res.json({ ok: true, url: pairingUrl() })
+  res.json({
+    session: found.session,
+    messages: found.messages,
+    image: found.session.imageUrl
+      ? {
+          src: `/api/image?term=${encodeURIComponent(found.session.imageUrl)}`,
+          credit: found.session.imageCredit,
+          title: found.session.term,
+        }
+      : null,
+  })
 })
 
-const hits = new Map<string, number[]>()
+app.delete('/api/sessions/:id', (req, res) => {
+  const id = req.params.id
+  const removed = typeof id === 'string' ? deleteSession(id) : false
+  res.json({ ok: removed })
+})
 
-/** Small in-memory limiter: keeps a stuck key-tapping loop from burning credits. */
-function allowLookup(ip: string | undefined): boolean {
-  const key = ip ?? 'unknown'
-  const now = Date.now()
-  const recent = (hits.get(key) ?? []).filter((at) => now - at < 60_000)
-  if (recent.length >= config.rateLimit.lookupsPerMinute) {
-    hits.set(key, recent)
-    return false
-  }
-  recent.push(now)
-  hits.set(key, recent)
-  return true
-}
-
-const NL = String.fromCharCode(10)
-
-app.post('/api/lookup', requireAuth(token), async (req, res) => {
-  const query = typeof req.body?.query === 'string' ? req.body.query.trim() : ''
-  if (!query) {
-    res.status(400).json({ error: 'Nothing to look up.' })
+app.post('/api/sessions/:id/direction', (req, res) => {
+  const id = typeof req.params.id === 'string' ? req.params.id : ''
+  const direction = req.body?.direction === 'hu-en' ? 'hu-en' : 'en-hu'
+  if (!getSession(id)) {
+    fail(res, 404, 'No such session.')
     return
   }
-  if (query.length > 1000) {
-    res.status(413).json({ error: 'Too long. Keep it to a phrase.' })
+  updateSession(id, { direction })
+  res.json({ ok: true, direction })
+})
+
+app.post('/api/chat', async (req, res) => {
+  const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
+  const requested = typeof req.body?.sessionId === 'string' ? req.body.sessionId : ''
+  const forced = req.body?.direction === 'hu-en' || req.body?.direction === 'en-hu'
+    ? (req.body.direction as Direction)
+    : undefined
+
+  if (!text) {
+    fail(res, 400, 'Nothing to look up.')
     return
   }
-  if (!allowLookup(req.ip)) {
-    res.status(429).json({ error: 'Slow down a little.' })
+  if (text.length > 800) {
+    fail(res, 413, 'Too long for a look-up. Keep it to a word or a sentence.')
     return
   }
+  if (!allowRequest(req.ip)) {
+    fail(res, 429, 'Slow down a little.')
+    return
+  }
+
+  let sessionId = requested
+  let direction: Direction = forced ?? 'en-hu'
+  let term: string | null = null
+  let fresh = false
+
+  if (sessionId) {
+    const existing = getSession(sessionId)
+    if (existing) {
+      direction = (existing.session.direction as Direction) ?? direction
+      term = existing.session.term
+    } else {
+      sessionId = ''
+    }
+  }
+
+  if (!sessionId) {
+    const guess = guessDirection(text)
+    direction = forced ?? guess.direction
+    term = titleFrom(text)
+    fresh = true
+    const image = await lookupImage(config, term)
+    const id = randomUUID()
+    createSession({
+      id,
+      title: term,
+      direction,
+      term,
+      imageUrl: image?.remoteUrl ?? null,
+      imageCredit: image?.credit ?? null,
+    })
+    sessionId = id
+  }
+
+  const stored = getSession(sessionId)
+  if (!stored) {
+    fail(res, 500, 'Could not open the session.')
+    return
+  }
+  const history: Turn[] = stored.messages.map((message) => ({
+    role: message.role,
+    content: message.content,
+  }))
+  history.push({ role: 'user', content: text })
+  addMessage(sessionId, 'user', text)
+  const userMessageId = getSession(sessionId)?.messages.at(-1)?.id ?? null
 
   res.status(200)
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
@@ -190,39 +209,51 @@ app.post('/api/lookup', requireAuth(token), async (req, res) => {
   const send = (payload: unknown) => {
     if (!res.writableEnded) res.write('data: ' + JSON.stringify(payload) + NL + NL)
   }
-
   const abort = new AbortController()
-  // `req` fires `close` as soon as the body has been read, so watch the response instead.
   res.on('close', () => {
     if (!res.writableEnded) abort.abort()
   })
   const heartbeat = setInterval(() => res.write(': ping' + NL), 15_000)
 
   try {
-    send({ type: 'start', model: config.openrouter.model })
+    send({
+      type: 'meta',
+      sessionId,
+      direction,
+      term,
+      fresh,
+      userMessageId,
+      image: stored.session.imageUrl
+        ? {
+            src: `/api/image?term=${encodeURIComponent(term ?? '')}`,
+            credit: stored.session.imageCredit,
+            title: term,
+          }
+        : null,
+    })
+    let answer = ''
     const result = await streamChat(
       config,
-      buildMessages(config, {
-        query,
-        targetName: typeof req.body?.targetName === 'string' ? req.body.targetName : undefined,
-        nativeName: typeof req.body?.nativeName === 'string' ? req.body.nativeName : undefined,
-      }),
+      buildMessages(config, direction, history),
       {
-        onDelta: (text) => send({ type: 'delta', text }),
-        onReasoning: (text) => send({ type: 'reasoning', text }),
+        onDelta: (chunk) => {
+          answer += chunk
+          send({ type: 'delta', text: chunk })
+        },
       },
       abort.signal,
     )
-    send({ type: 'done', model: result.model, usage: result.usage })
+    if (answer.trim()) addMessage(sessionId, 'assistant', answer)
+    send({ type: 'done', usage: result.usage, model: result.model })
   } catch (error) {
     if (!abort.signal.aborted) {
-      const known = error instanceof OpenRouterError
+      const known = error instanceof ChatError
+      console.error('[chat]', error)
       send({
         type: 'error',
         status: known ? error.status : 500,
-        message: known ? error.message : 'Look-up failed. Check the server log.',
+        message: known ? error.message : 'The look-up failed. Check the server log.',
       })
-      console.error('[lookup]', error)
     }
   } finally {
     clearInterval(heartbeat)
@@ -230,17 +261,39 @@ app.post('/api/lookup', requireAuth(token), async (req, res) => {
   }
 })
 
-// Speech clips are keyed by content hash, so the phone can replay a cached one.
-app.get('/api/tts/:file', requireAuth(token), (req, res) => {
+// A picture for the headword, fetched from Wikipedia once and then served from
+// disk, so the overlay keeps working offline and never hotlinks.
+app.get('/api/image', async (req, res) => {
+  const term = typeof req.query.term === 'string' ? req.query.term.trim() : ''
+  if (!term) {
+    fail(res, 400, 'Which term?')
+    return
+  }
+  const image = await lookupImage(config, term)
+  if (!image) {
+    fail(res, 404, 'No picture for that one.')
+    return
+  }
+  const bytes = await imageBytes(image.remoteUrl)
+  if (!bytes) {
+    fail(res, 502, 'The picture could not be fetched.')
+    return
+  }
+  res.setHeader('Content-Type', bytes.contentType)
+  res.setHeader('Cache-Control', 'public, max-age=604800')
+  res.send(bytes.bytes)
+})
+
+app.get('/api/tts/:file', (req, res) => {
   const raw = req.params.file
   const name = path.basename(typeof raw === 'string' ? raw : '')
   if (!/^[a-f0-9]{16}\.wav$/.test(name)) {
-    res.status(400).json({ error: 'Bad clip name.' })
+    fail(res, 400, 'Bad clip name.')
     return
   }
   const file = path.join(cacheDir(), name)
   if (!fs.existsSync(file)) {
-    res.status(404).json({ error: 'No such clip.' })
+    fail(res, 404, 'No such clip.')
     return
   }
   res.setHeader('Content-Type', 'audio/wav')
@@ -248,26 +301,26 @@ app.get('/api/tts/:file', requireAuth(token), (req, res) => {
   fs.createReadStream(file).pipe(res)
 })
 
-app.post('/api/speak/stop', requireAuth(token), (_req, res) => {
+app.post('/api/speak/stop', (_req, res) => {
   res.json({ ok: true, stopped: stopPlayback() })
 })
 
-app.post('/api/speak', requireAuth(token), async (req, res) => {
+app.post('/api/speak', async (req, res) => {
   const text = typeof req.body?.text === 'string' ? req.body.text.trim() : ''
   const voice = typeof req.body?.voice === 'string' ? req.body.voice : undefined
   const instructions =
     typeof req.body?.instructions === 'string' ? req.body.instructions : undefined
 
   if (!text) {
-    res.status(400).json({ error: 'Nothing to say.' })
+    fail(res, 400, 'Nothing to say.')
     return
   }
   if (text.length > 1200) {
-    res.status(413).json({ error: 'Too long to speak. Hand it a word or a sentence.' })
+    fail(res, 413, 'Too long to speak. Hand it a word or a sentence.')
     return
   }
-  if (!allowLookup(req.ip)) {
-    res.status(429).json({ error: 'Slow down a little.' })
+  if (!allowRequest(req.ip)) {
+    fail(res, 429, 'Slow down a little.')
     return
   }
 
@@ -276,7 +329,6 @@ app.post('/api/speak', requireAuth(token), async (req, res) => {
     let player: string | null = null
     let playedOnHost = false
     let playError: string | null = null
-
     if (config.tts.playOnHost) {
       try {
         const playback = await playOnHost(speech.file, config.tts.player)
@@ -286,7 +338,6 @@ app.post('/api/speak', requireAuth(token), async (req, res) => {
         playError = error instanceof Error ? error.message : String(error)
       }
     }
-
     const name = path.basename(speech.file)
     res.json({
       ok: true,
@@ -312,74 +363,43 @@ app.post('/api/speak', requireAuth(token), async (req, res) => {
 const hasBuild = fs.existsSync(path.join(distDir, 'index.html'))
 if (hasBuild) {
   app.use(express.static(distDir, { index: false, maxAge: '1h' }))
-} else {
-  app.use('/api', (_req, res) => {
-    res.status(503).json({ error: 'No production build. Run `npm run build`.' })
-  })
 }
-
 app.use((req, res) => {
   if (req.method !== 'GET') {
-    res.status(404).json({ error: 'Not found' })
+    fail(res, 404, 'Not found')
     return
   }
   if (hasBuild) {
     res.sendFile(path.join(distDir, 'index.html'))
     return
   }
-  res.status(503).type('html').send(noBuildPage())
+  res
+    .status(503)
+    .type('html')
+    .send(
+      '<!doctype html><meta charset="utf-8"><title>translator</title>' +
+        '<body style="background:#000;color:#ddd;font:16px system-ui;padding:2rem">' +
+        '<p>No build yet. Run <code>npm run build</code> (or <code>npm run dev</code> for the dev server).</p>',
+    )
 })
 
-function pageShell(title: string, body: string): string {
-  return (
-    '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
-    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<meta name="theme-color" content="#000000">' +
-    '<title>' + title + '</title>' +
-    '<style>html,body{margin:0;height:100%;background:#000;color:#e8e8e8;' +
-    'font:16px/1.6 system-ui,-apple-system,Segoe UI,sans-serif;display:grid;place-items:center}' +
-    'main{max-width:28rem;padding:1.5rem}a{color:#7ab7ff}code{background:#141414;padding:.15rem .35rem;' +
-    'border-radius:.3rem;word-break:break-all}</style></head><body><main>' +
-    body +
-    '</main></body></html>'
-  )
-}
-
-function noBuildPage(): string {
-  return pageShell(
-    'translator — build missing',
-    '<h1>No build yet</h1><p>Run <code>npm run dev</code> for development, or ' +
-      '<code>npm run build &amp;&amp; npm start</code> to serve the app from here.</p>',
-  )
-}
-
-function pairingFailurePage(): string {
-  return pageShell(
-    'translator — pairing failed',
-    '<h1>Pairing link is not valid</h1><p>The code in the QR link no longer matches. ' +
-      'Open <code>http://localhost:' +
-      config.server.port +
-      '</code> on the PC and scan the QR code again.</p>',
-  )
-}
-
 const server = app.listen(config.server.port, config.server.host, () => {
-  const lan = `http://${localAddress()}:${config.server.port}`
+  const address = `${config.server.host}:${config.server.port}`
   const lines = [
     '',
     '  translator is running',
-    `  pc      ${config.server.publicUrl || `http://localhost:${config.server.port}`}`,
-    `  phone   ${lan}`,
-    `  model   ${config.openrouter.model}`,
-    `  target  ${config.language.targetName} (${config.language.nativeName})`,
-    `  config  ${configPath}`,
+    `  api      http://${address}`,
+    `  model    ${config.openrouter.model}`,
+    `  hotkey   ${config.hotkey}`,
+    `  speech   ${config.tts.model} (${config.tts.voice}) -> ${config.tts.playOnHost ? 'this machine' : 'nowhere'}`,
+    `  images   ${config.images.enabled ? `${config.images.wiki}.wikipedia.org` : 'off'}`,
+    `  database ${pathOfDatabase()}`,
+    `  config   ${loaded.file}${loaded.usingDefaults ? ' (missing, using config.example.mjs)' : ''}`,
   ]
   if (!config.openrouter.apiKey) {
-    lines.push('', '  ! no OpenRouter API key yet — add openrouter.apiKey to config.json')
+    lines.push('', '  ! no OpenRouter API key — add openrouter.apiKey to config.mjs')
   }
-  if (createdFile) lines.push('', '  created config.json — tune it and restart if you like')
-  if (generatedToken) lines.push('  generated a new auth token')
-  lines.push('', `  pair    ${pairingUrl()}`, '')
+  lines.push('', `  overlay  npm run overlay   (Ctrl+Alt+Shift+F12 by default)`, '')
   console.log(lines.join('\n'))
 })
 
@@ -388,14 +408,3 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     server.close(() => process.exit(0))
   })
 }
-
-
-
-
-
-
-
-
-
-
-

@@ -4,85 +4,77 @@ Same rules as the global instructions, plus what is specific to this repo.
 
 ## What this is
 
-A phone-first English look-up app: a Vue 3 + Reka UI SPA (`src/`) served by a small Express server
-(`server/`) that proxies streaming chat completions to OpenRouter. The API key stays on the PC.
+A bilingual English↔Hungarian dictionary in a hotkey-summoned desktop overlay. An Electron window
+(the renderer is Vue 3 + Reka UI) talks to a small Express server that streams OpenRouter chat
+completions, stores threads in SQLite, looks up Wikipedia lead images and plays Gemini TTS on this
+machine. There is no phone, no PWA and no auth: everything is loopback.
 
 ## Commands
 
 ```bash
-npm run dev        # vite :5180 (proxies /api, /auth to :8787) + server :8787, watch mode
-npm run build      # vue-tsc + tsc --noEmit, then vite build into dist/
-npm start          # serve dist/ + API from one process (what the phone talks to)
-npm run typecheck  # both project references, no output
-npm run icons      # regenerate PWA icons from design/icon-1024.png
+npm run dev            # tsx watch on :8787 + vite on :5180
+npm run dev:overlay    # the Electron window against the vite dev server
+npm run build          # vue-tsc + tsc --noEmit, then vite build into dist/
+npm start              # the API alone
+npm run overlay        # the window alone (bash scripts/overlay.sh)
+npm run typecheck      # both TS projects, no output
 ```
 
-The nginx vhost for the desktop alias (`http://translator.localhost`, port 80 → 8787) is versioned as
-`deploy/nginx-translator.localhost.conf`; the live copy is `/etc/nginx/sites-enabled/translator.localhost`
-and every `*.localhost` name is also listed on the landing page at `http://localhost/`
-(`/var/www/localhost/index.html`) — update both places together.
-`proxy_buffering off` there is required for SSE, and its loopback ACL is what stops a LAN client from
-reading the pairing token through the proxy.
-
-The app itself runs under pm2 as `translator` (see `ecosystem.config.cjs`), which is what keeps the
-vhost from answering 502. After changing it: `pm2 restart translator`. It is in `~/.pm2/dump.pm2`, so
-`pm2 resurrect` brings it back on boot.
-
-Always run `npm run typecheck` (or `npm run build`) before saying a change works — the SPA and the
+Always run `npm run typecheck` (or `npm run build`) before claiming a change works — the SPA and the
 server are separate TS projects (`tsconfig.app.json`, `tsconfig.server.json`).
+
+Either restart the pm2 apps (`pm2 restart translator translator-overlay`) or use `npm run dev` +
+`npm run dev:overlay`. A plain `npm start` does **not** pick up server changes.
 
 ## Layout
 
-- `src/components/` — `LookupView` (phone app), `PairScreen` (PC, shows the QR), `ResultCard`,
-  `HistorySheet`, `SettingsSheet`.
-- `src/lib/` — markdown rendering, settings/history persistence, display mode, wake lock, speech
-  fallback, toasts, language table.
-- `server/` — `config.ts` (load/merge/persist), `auth.ts` (cookie + device tracking),
-  `openrouter.ts` (SSE chat client), `tts.ts` (speech + WAV wrapping + cache), `audio.ts` (host
-  playback), `prompt.ts` (the dictionary prompt), `index.ts` (routes).
+- `electron/main.mjs` — window, hotkey, IPC. `electron/preload.mjs` — the three bridged methods.
+- `src/components/` — `ChatView` (transcript + composer), `MessageCard` (one answer: markdown,
+  picture, pronounce chips), `SessionPanel`, `SettingsPanel`.
+- `src/lib/` — markdown rendering, settings, toasts.
+- `server/` — `index.ts` (routes), `prompt.ts` (the product), `db.ts` (sqlite), `chat.ts` (SSE
+  client), `tts.ts` (speech + WAV + cache), `audio.ts` (host playback), `images.ts` (Wikipedia),
+  `direction.ts` (EN↔HU detection), `config.ts` (loads `config.mjs`).
 
 ## Things that bite
 
-- **`config.json` is runtime state, not source.** It is git-ignored, generated on first start, and
-  the auth token is written back into it. `config.example.json` is the committed template — keep the
-  two in sync when adding keys (the `tts` block landed in both).
+- **`ELECTRON_RUN_AS_NODE` is set on this machine**, in the shell and in the pm2 daemon. With it,
+  the Electron binary runs as plain Node: no window, no error. Always launch through
+  `scripts/overlay.sh`, which unsets it.
+- **The app must set its own `userData` and app name before `whenReady`.** Run as a bare script,
+  Electron calls itself "Electron" and shares `~/.config/Electron` with other Electron apps — whose
+  single-instance lock then makes this one quit silently on startup.
+- **The prompt is the product, and its formatting is load-bearing.** Bold marks exactly the words
+  being translated, because the renderer turns every `<strong>` into a pronounce button; a stray bold
+  becomes a stray button. Explanations are English in both directions — the user asked for that
+  explicitly.
+- **`config.mjs`, not `config.json`.** `config.example.mjs` holds the defaults *and* is imported as
+  the default layer, so a new key must be added there too.
 - **Backticks inside the prompt template literal** in `server/prompt.ts` end the template string and
-  break the build. Write markers like `'_(en)_'` with single quotes if you need them quoted.
-- **Gemini TTS only returns headerless PCM** (`response_format: 'pcm'`; it 400s on `mp3`), which is
-  why `server/tts.ts` writes a RIFF/WAVE header before the file is played or served.
+  break the build. Quote markers with single quotes instead.
+- **Gemini TTS only returns headerless PCM** (`response_format: 'pcm'`; `mp3` is a 400), which is why
+  `server/tts.ts` writes a RIFF/WAVE header before anything plays or serves the file.
 - **Speech plays on the host on purpose.** `tts.playOnHost` shells out to `paplay`/`pw-play`/`ffplay`/
-  `mpv`/`aplay`; the player is killed and replaced when a new clip starts, and `Stop` kills the
-  process group — so the spawn must stay `detached`.
-- **Scoped CSS does not reach Reka's Select content or viewport.** Style them with `:deep()`.
-- **Never portal a Reka popover out of a modal Dialog** — the dialog's pointer-events lock makes it
-  untappable. `SelectPortal disabled` keeps it inside.
+  `mpv`/`aplay`; a new clip kills the previous one, and the spawn has to stay `detached` for the
+  process-group kill to work.
 - **`req.on('close')` fires once the request body is read** on modern Node, which would abort every
   look-up immediately. Watch `res.on('close')` and check `res.writableEnded` instead.
-- **The pairing page is loopback-only** unless `auth.allowRemotePairing` is set; the QR contains the
-  token, so do not loosen that casually.
-- The phone UI is deliberately pitch black; do not introduce elevated greys or accent colours beyond
-  the ones in `src/style.css`.
+- **Wikipedia images are the article's lead image or nothing.** Do not add a search fallback: it
+  happily returns "Empty table setting" for "fast", and a wrong picture is worse than none.
+- Scoped CSS does not reach Reka's Select content — style it with `:deep()`, and never portal a
+  Reka popover out of a modal dialog (the pointer-events lock makes it untappable).
 
-## Testing a look-up without spending money
-
-Point `openrouter.baseUrl` at any OpenAI-compatible SSE endpoint (a throwaway mock is enough) and set
-`openrouter.apiKey` to a dummy value. Then `npm run build && npm start`, open `http://localhost:8787`,
-scan-pair with `?k=<token>`, and drive the UI with a headless browser.
-
-## Testing speech
-
-Speech needs a real key — `/audio/speech` is not worth mocking, since the interesting failures are
-provider-shaped (the model refusing `mp3`, an unknown voice name). A one-word clip costs a fraction
-of a cent:
+## Testing
 
 ```bash
-TOKEN=$(python3 -c "import json;print(json.load(open('config.json'))['auth']['token'])")
-curl -s -c /tmp/jar "http://localhost:8787/auth?k=$TOKEN" -o /dev/null
-curl -s -b /tmp/jar -X POST http://localhost:8787/api/speak \
-  -H 'content-type: application/json' -d '{"text":"nerf"}'
+TOKEN_FREE=1 curl -s localhost:8787/api/status | python3 -m json.tool
+curl -s -N -X POST localhost:8787/api/chat -H 'content-type: application/json' \
+  -d '{"text":"liquid"}'          # SSE: meta, delta…, done
+curl -s -X POST localhost:8787/api/speak -H 'content-type: application/json' \
+  -d '{"text":"liquid"}'          # plays on this machine
 ```
 
-To prove the sound really leaves the machine, watch the sink while it plays:
+To prove the audio really leaves the machine, watch the sink while it plays:
 
 ```bash
 pactl -f json list sink-inputs | python3 -c "import json,sys;print([(i['properties'].get('application.name'), i['sink']) for i in json.load(sys.stdin)])"
@@ -90,3 +82,8 @@ pactl -f json list sink-inputs | python3 -c "import json,sys;print([(i['properti
 
 A `paplay` entry on your default sink is the feature working. `ffprobe .cache/tts/*.wav` should report
 `pcm_s16le, 24000 Hz, mono`.
+
+For the overlay itself: `xdotool key ctrl+alt+shift+F12` toggles it, and `xdotool search --name
+translator` finds the window. When clicking something inside it, get the coordinates from the DOM
+(load the same page in a browser at the window's CSS size) rather than estimating from a screenshot —
+guessing pixels lands on the scrim, which hides the window and looks like a broken click.
